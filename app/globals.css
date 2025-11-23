@@ -24,3 +24,17 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+/* === スマホで背景が白く霞む問題の修正 === */
+body {
+  background: #f9fafb; /* 固定の淡い背景色 */
+}
+
+*[class*="bg-gradient-to-"] {
+  background: none !important;
+}
+
+@media (max-width: 768px) {
+  .min-h-screen {
+    background: #f9fafb !important;
+  }
+}
