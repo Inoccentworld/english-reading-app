@@ -602,36 +602,7 @@ const [showToast, setShowToast] = useState(false);
                       {line.phonetic}
                     </div>
                   )}
-                                    <div className="mt-3 text-right">
-                    <button
-                      onClick={async () => {
-                        const currentUnit = units[0];
-                        if (!currentUnit) return;
-
-                        const newWord = {
-                          word: line.english,
-                          meaning: line.japanese,
-                          unit_id: currentUnit.id,
-                          unit_title: currentUnit.title,
-                        };
-
-                        const { data, error } = await supabase
-                          .from('vocabulary')
-                          .insert([newWord])
-                          .select();
-
-                        if (!error && data) {
-                          setVocabulary([...vocabulary, data[0]]);
-                          alert(`「${line.english}」を単語帳に追加しました`);
-                        } else {
-                          alert('追加に失敗しました');
-                        }
-                      }}
-                      className="text-sm bg-purple-600 text-white px-3 py-1 rounded hover:bg-purple-700"
-                    >
-                      単語帳に追加
-                    </button>
-                  </div>
+                    
 
                 </div>
               ))}
