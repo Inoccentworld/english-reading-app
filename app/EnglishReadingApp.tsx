@@ -585,20 +585,11 @@ const [showToast, setShowToast] = useState(false);
               {units[0]?.lines.map((line) => (
                 <div key={line.id} className="border-b border-gray-200 pb-4 last:border-0">
                   <div
-  className="text-lg leading-relaxed select-text cursor-text mb-2"
-  onMouseUp={handleTextSelection}
->
-  {line.english}
-</div>
-
-{line.showJapanese && line.japanese && (
-  <div
-    className="mt-2 p-3 bg-blue-50 rounded text-gray-700 text-sm select-text cursor-text"
-    onMouseUp={handleTextSelection}
-  >
-    {line.japanese}
-  </div>
-)}
+                    className="text-lg leading-relaxed select-text cursor-text mb-2"
+                    onMouseUp={handleTextSelection}
+                  >
+                    {line.english}
+                  </div>
 
 
                   {line.showJapanese && line.japanese && (
@@ -725,6 +716,43 @@ const [showToast, setShowToast] = useState(false);
                     </div>
                     )}
                 </div>
+                {/* === 訳・発音の表示切り替えボタン === */}
+                <div className="flex gap-3 justify-center mt-3">
+                  <button
+                    onClick={() => {
+                      const updated = units.map((u) => ({
+                        ...u,
+                        lines: u.lines.map((l) => ({
+                          ...l,
+                          showJapanese: !l.showJapanese,
+                        })),
+                      }));
+                      setUnits(updated);
+                    }}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700"
+                  >
+                    <Eye size={20} />
+                    和訳を切り替え
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      const updated = units.map((u) => ({
+                        ...u,
+                        lines: u.lines.map((l) => ({
+                          ...l,
+                          showPhonetic: !l.showPhonetic,
+                        })),
+                      }));
+                      setUnits(updated);
+                    }}
+                    className="flex items-center gap-2 bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700"
+                  >
+                    <EyeOff size={20} />
+                    発音を切り替え
+                  </button>
+                </div>
+
                 {showToast && (
                     <div className="fixed bottom-16 left-1/2 transform -translate-x-1/2 bg-green-500 text-white px-6 py-2 rounded-lg shadow-lg transition-opacity">
                     追加しました！
