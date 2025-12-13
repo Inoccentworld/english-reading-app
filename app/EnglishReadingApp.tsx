@@ -82,26 +82,45 @@ const [showToast, setShowToast] = useState(false);
   }, []);
 
   const loadAll = async () => {
-    const { data: folderData } = await supabase.from('folders').select('*');
-    const { data: unitData } = await supabase.from('units').select('*');
-    const { data: vocabData } = await supabase.from('vocabulary').select('*');
-    if (folderData) setFolders(folderData);
-    if (unitData) setUnits(unitData);
-    if (vocabData) setVocabulary(vocabData);
-  };
+  const [fRes, uRes, vRes] = await Promise.all([
+    supabase.from('folders').select('*').order('created_at', { ascending: true }),
+    supabase.from('units').select('*').order('created_at', { ascending: false }),
+    supabase.from('vocabulary').select('*').order('created_at', { ascending: false }),
+  ]);
+
+  if (fRes.error) console.error('folders load error', fRes.error);
+  if (uRes.error) console.error('units load error', uRes.error);
+  if (vRes.error) console.error('vocabulary load error', vRes.error);
+
+  if (fRes.data) setFolders(fRes.data);
+  if (uRes.data) setUnits(uRes.data);
+  if (vRes.data) setVocabulary(vRes.data);
+};
+
 
   // === フォルダー操作 ===
   const addFolder = async () => {
-    if (!newFolderName.trim()) return;
-    const { data, error } = await supabase.from('folders').insert([
-      { name: newFolderName }
-    ]).select();
-    if (!error && data) {
-      setFolders([...folders, ...data]);
-      setNewFolderName('');
-      setShowFolderInput(false);
-    }
-  };
+  if (!newFolderName.trim()) return;
+
+  const { data, error } = await supabase
+    .from('folders')
+    .insert([{ name: newFolderName.trim() }])
+    .select(); // ← ここで select 権限が無いと失敗する
+
+  if (error) {
+    console.error('addFolder error:', error);
+    alert(`フォルダー追加に失敗: ${error.message}`);
+    return;
+  }
+
+  // data が返らない/空の可能性にも備える
+  await loadAll();
+  setNewFolderName('');
+  setShowFolderInput(false);
+};
+
+
+
 
   const deleteFolder = async (id: string) => {
     await supabase.from('folders').delete().eq('id', id);
@@ -127,27 +146,37 @@ const [showToast, setShowToast] = useState(false);
   };
 
   const addUnit = async () => {
-    const parsed = parseMultilineInput(newUnitEnglish, newUnitJapanese, newUnitPhonetic);
-    if (parsed.length === 0) {
-      alert('英文を1行以上入力してください');
-      return;
-    }
-    const newUnit = {
-      title: newUnitTitle || '無題',
-      folder_id: newUnitFolder || null,
-      lines: parsed
-    };
-    const { data, error } = await supabase.from('units').insert([newUnit]).select();
-    if (!error && data) {
-      setUnits([...units, data[0]]);
-      setNewUnitTitle('');
-      setNewUnitEnglish('');
-      setNewUnitJapanese('');
-      setNewUnitPhonetic('');
-      setNewUnitFolder('');
-      setCurrentView('list');
-    }
+  const parsed = parseMultilineInput(newUnitEnglish, newUnitJapanese, newUnitPhonetic);
+  if (parsed.length === 0) {
+    alert('英文を1行以上入力してください');
+    return;
+  }
+
+  const payload = {
+    title: (newUnitTitle || '無題').trim(),
+    folder_id: newUnitFolder || null,
+    lines: parsed,
   };
+
+  const { data, error } = await supabase
+    .from('units')
+    .insert([payload])
+    .select();
+
+  if (error) {
+    console.error('addUnit error:', error);
+    alert(`ユニット追加に失敗: ${error.message}`);
+    return;
+  }
+
+  await loadAll();
+  setNewUnitTitle('');
+  setNewUnitEnglish('');
+  setNewUnitJapanese('');
+  setNewUnitPhonetic('');
+  setNewUnitFolder('');
+  setCurrentView('list');
+};
   const handleTextSelection = () => {
   const selection = window.getSelection();
   const text = selection?.toString().trim();
