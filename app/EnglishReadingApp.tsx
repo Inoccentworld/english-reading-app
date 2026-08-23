@@ -1,11 +1,18 @@
-'use client';
+"use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from "react";
 import {
-  BookOpen, Plus, List, X, Eye, EyeOff, Folder,
-  FolderPlus, Save
-} from 'lucide-react';
-import { supabase } from '@/lib/supabaseClient';
+  BookOpen,
+  Plus,
+  List,
+  X,
+  Eye,
+  EyeOff,
+  Folder,
+  FolderPlus,
+  Save,
+} from "lucide-react";
+import { supabase } from "@/lib/supabaseClient";
 
 // === 型定義 ==============================
 type FolderType = {
@@ -43,18 +50,20 @@ export default function EnglishReadingApp() {
   const [folders, setFolders] = useState<FolderType[]>([]);
   const [units, setUnits] = useState<UnitType[]>([]);
   const [vocabulary, setVocabulary] = useState<VocabularyType[]>([]);
-  const [currentView, setCurrentView] =
-    useState<'list' | 'add' | 'edit' | 'reader' | 'vocabulary'>('list');
+  const [currentView, setCurrentView] = useState<
+    "list" | "add" | "edit" | "reader" | "vocabulary"
+  >("list");
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
-  const [newFolderName, setNewFolderName] = useState('');
+  const [selectedUnit, setSelectedUnit] = useState<UnitType | null>(null);
+  const [newFolderName, setNewFolderName] = useState("");
   const [showFolderInput, setShowFolderInput] = useState(false);
 
   // === ユニット追加用 ===
-  const [newUnitTitle, setNewUnitTitle] = useState('');
-  const [newUnitEnglish, setNewUnitEnglish] = useState('');
-  const [newUnitJapanese, setNewUnitJapanese] = useState('');
-  const [newUnitPhonetic, setNewUnitPhonetic] = useState('');
-  const [newUnitFolder, setNewUnitFolder] = useState('');
+  const [newUnitTitle, setNewUnitTitle] = useState("");
+  const [newUnitEnglish, setNewUnitEnglish] = useState("");
+  const [newUnitJapanese, setNewUnitJapanese] = useState("");
+  const [newUnitPhonetic, setNewUnitPhonetic] = useState("");
+  const [newUnitFolder, setNewUnitFolder] = useState("");
 
   // === フラッシュカード関連 ===
   const [flashcardMode, setFlashcardMode] = useState(false);
@@ -62,19 +71,20 @@ export default function EnglishReadingApp() {
   const [showAnswer, setShowAnswer] = useState(false);
   const [flashcardShowWord, setFlashcardShowWord] = useState(true);
   // 単語追加用
-const [selectedText, setSelectedText] = useState('');
-const [selectedMeaning, setSelectedMeaning] = useState('');
-const [isSelectingMeaning, setIsSelectingMeaning] = useState(false);
-const [showToast, setShowToast] = useState(false);
+  const [selectedText, setSelectedText] = useState("");
+  const [selectedMeaning, setSelectedMeaning] = useState("");
+  const [isSelectingMeaning, setIsSelectingMeaning] = useState(false);
+  const [showToast, setShowToast] = useState(false);
+  const [vocabFolder, setVocabFolder] = useState("");
+  const [vocabUnit, setVocabUnit] = useState("");
 
-    // 編集用 state
+  // 編集用 state
   const [editingUnit, setEditingUnit] = useState<UnitType | null>(null);
-  const [editUnitTitle, setEditUnitTitle] = useState('');
-  const [editUnitEnglish, setEditUnitEnglish] = useState('');
-  const [editUnitJapanese, setEditUnitJapanese] = useState('');
-  const [editUnitPhonetic, setEditUnitPhonetic] = useState('');
-  const [editUnitFolder, setEditUnitFolder] = useState('');
-
+  const [editUnitTitle, setEditUnitTitle] = useState("");
+  const [editUnitEnglish, setEditUnitEnglish] = useState("");
+  const [editUnitJapanese, setEditUnitJapanese] = useState("");
+  const [editUnitPhonetic, setEditUnitPhonetic] = useState("");
+  const [editUnitFolder, setEditUnitFolder] = useState("");
 
   // === 初期ロード ===
   useEffect(() => {
@@ -82,138 +92,208 @@ const [showToast, setShowToast] = useState(false);
   }, []);
 
   const loadAll = async () => {
-  const [fRes, uRes, vRes] = await Promise.all([
-    supabase.from('folders').select('*').order('created_at', { ascending: true }),
-    supabase.from('units').select('*').order('created_at', { ascending: false }),
-    supabase.from('vocabulary').select('*').order('created_at', { ascending: false }),
-  ]);
+    const [fRes, uRes, vRes] = await Promise.all([
+      supabase
+        .from("folders")
+        .select("*")
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("units")
+        .select("*")
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("vocabulary")
+        .select("*")
+        .order("created_at", { ascending: false }),
+    ]);
 
-  if (fRes.error) console.error('folders load error', fRes.error);
-  if (uRes.error) console.error('units load error', uRes.error);
-  if (vRes.error) console.error('vocabulary load error', vRes.error);
+    if (fRes.error) console.error("folders load error", fRes.error);
+    if (uRes.error) console.error("units load error", uRes.error);
+    if (vRes.error) console.error("vocabulary load error", vRes.error);
 
-  if (fRes.data) setFolders(fRes.data);
-  if (uRes.data) setUnits(uRes.data);
-  if (vRes.data) setVocabulary(vRes.data);
-};
-
+    if (fRes.data) setFolders(fRes.data);
+    if (uRes.data) setUnits(uRes.data);
+    if (vRes.data) setVocabulary(vRes.data);
+  };
 
   // === フォルダー操作 ===
   const addFolder = async () => {
-  if (!newFolderName.trim()) return;
+    if (!newFolderName.trim()) return;
 
-  const { data, error } = await supabase
-    .from('folders')
-    .insert([{ name: newFolderName.trim() }])
-    .select(); // ← ここで select 権限が無いと失敗する
+    const { data, error } = await supabase
+      .from("folders")
+      .insert([{ name: newFolderName.trim() }])
+      .select(); // ← ここで select 権限が無いと失敗する
 
-  if (error) {
-    console.error('addFolder error:', error);
-    alert(`フォルダー追加に失敗: ${error.message}`);
-    return;
-  }
+    if (error) {
+      console.error("addFolder error:", error);
+      alert(`フォルダー追加に失敗: ${error.message}`);
+      return;
+    }
 
-  // data が返らない/空の可能性にも備える
-  await loadAll();
-  setNewFolderName('');
-  setShowFolderInput(false);
-};
-
-
-
+    // data が返らない/空の可能性にも備える
+    await loadAll();
+    setNewFolderName("");
+    setShowFolderInput(false);
+  };
 
   const deleteFolder = async (id: string) => {
-    await supabase.from('folders').delete().eq('id', id);
-    setFolders(folders.filter(f => f.id !== id));
-    setUnits(units.map(u => (u.folder_id === id ? { ...u, folder_id: null } : u)));
+    await supabase.from("folders").delete().eq("id", id);
+    setFolders(folders.filter((f) => f.id !== id));
+    setUnits(
+      units.map((u) => (u.folder_id === id ? { ...u, folder_id: null } : u)),
+    );
   };
 
   // === ユニット操作 ===
   const parseMultilineInput = (
     englishText: string,
     japaneseText: string,
-    phoneticText: string
+    phoneticText: string,
   ) => {
-    const e = englishText.split('\n').map(l => l.trim()).filter(Boolean);
-    const j = japaneseText.split('\n').map(l => l.trim());
-    const p = phoneticText.split('\n').map(l => l.trim());
+    const e = englishText
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const j = japaneseText.split("\n").map((l) => l.trim());
+    const p = phoneticText.split("\n").map((l) => l.trim());
     return e.map((eng, i) => ({
       id: i,
       english: eng,
-      japanese: j[i] || '',
-      phonetic: p[i] || ''
+      japanese: j[i] || "",
+      phonetic: p[i] || "",
     }));
   };
 
   const addUnit = async () => {
-  const parsed = parseMultilineInput(newUnitEnglish, newUnitJapanese, newUnitPhonetic);
-  if (parsed.length === 0) {
-    alert('英文を1行以上入力してください');
-    return;
-  }
+    const parsed = parseMultilineInput(
+      newUnitEnglish,
+      newUnitJapanese,
+      newUnitPhonetic,
+    );
+    if (parsed.length === 0) {
+      alert("英文を1行以上入力してください");
+      return;
+    }
 
-  const payload = {
-    title: (newUnitTitle || '無題').trim(),
-    folder_id: newUnitFolder || null,
-    lines: parsed,
+    const payload = {
+      title: (newUnitTitle || "無題").trim(),
+      folder_id: newUnitFolder || null,
+      lines: parsed,
+    };
+
+    const { data, error } = await supabase
+      .from("units")
+      .insert([payload])
+      .select();
+
+    if (error) {
+      console.error("addUnit error:", error);
+      alert(`ユニット追加に失敗: ${error.message}`);
+      return;
+    }
+
+    await loadAll();
+    setNewUnitTitle("");
+    setNewUnitEnglish("");
+    setNewUnitJapanese("");
+    setNewUnitPhonetic("");
+    setNewUnitFolder("");
+    setCurrentView("list");
+  };
+  const handleTextSelection = () => {
+    const selection = window.getSelection();
+    const text = selection?.toString().trim();
+    if (text) {
+      if (isSelectingMeaning) {
+        setSelectedMeaning(text);
+      } else {
+        setSelectedText(text);
+      }
+    }
   };
 
-  const { data, error } = await supabase
-    .from('units')
-    .insert([payload])
-    .select();
-
-  if (error) {
-    console.error('addUnit error:', error);
-    alert(`ユニット追加に失敗: ${error.message}`);
-    return;
-  }
-
-  await loadAll();
-  setNewUnitTitle('');
-  setNewUnitEnglish('');
-  setNewUnitJapanese('');
-  setNewUnitPhonetic('');
-  setNewUnitFolder('');
-  setCurrentView('list');
-};
-  const handleTextSelection = () => {
-  const selection = window.getSelection();
-  const text = selection?.toString().trim();
-  if (text) {
-    if (isSelectingMeaning) {
-      setSelectedMeaning(text);
-    } else {
-      setSelectedText(text);
-    }
-  }
-};
-
-
   const getFilteredUnits = () =>
-    selectedFolder ? units.filter(u => u.folder_id === selectedFolder) : units;
+    selectedFolder
+      ? units.filter((u) => u.folder_id === selectedFolder)
+      : units;
   const startEditUnit = (unit: UnitType) => {
     setEditingUnit(unit);
     setEditUnitTitle(unit.title);
-    setEditUnitFolder(unit.folder_id || '');
-    setEditUnitEnglish(unit.lines.map((l) => l.english).join('\n'));
-    setEditUnitJapanese(unit.lines.map((l) => l.japanese).join('\n'));
-    setEditUnitPhonetic(unit.lines.map((l) => l.phonetic).join('\n'));
-    setCurrentView('edit');
+    setEditUnitFolder(unit.folder_id || "");
+    setEditUnitEnglish(unit.lines.map((l) => l.english).join("\n"));
+    setEditUnitJapanese(unit.lines.map((l) => l.japanese).join("\n"));
+    setEditUnitPhonetic(unit.lines.map((l) => l.phonetic).join("\n"));
+    setCurrentView("edit");
+  };
+  const vocabUnits = vocabFolder
+    ? units.filter((u) => u.folder_id === vocabFolder)
+    : units;
+
+  const filteredVocabulary = vocabUnit
+    ? vocabulary.filter((v) => v.unit_id === vocabUnit)
+    : vocabFolder
+      ? vocabulary.filter((v) =>
+          units.some((u) => u.id === v.unit_id && u.folder_id === vocabFolder),
+        )
+      : vocabulary;
+
+  const exportVocabularyCsv = () => {
+    const escapeCsvValue = (value: string) =>
+      `"${value.replace(/"/g, '""')}"`;
+    const sanitizeFileName = (value: string) =>
+      value.replace(/[\\/:*?"<>|]/g, "_").replace(/[. ]+$/g, "");
+
+    const targetUnits = vocabUnit
+      ? units.filter((unit) => unit.id === vocabUnit)
+      : vocabFolder
+        ? units.filter((unit) => unit.folder_id === vocabFolder)
+        : units;
+
+    targetUnits.forEach((unit) => {
+      const unitVocabulary = filteredVocabulary.filter(
+        (item) => item.unit_id === unit.id,
+      );
+      if (unitVocabulary.length === 0) return;
+
+      const csvRows = [
+        ["単語", "意味"],
+        ...unitVocabulary.map((item) => [item.word, item.meaning]),
+      ];
+      const csv = csvRows
+        .map((row) => row.map(escapeCsvValue).join(","))
+        .join("\r\n");
+      const folderName =
+        folders.find((folder) => folder.id === unit.folder_id)?.name ??
+        "フォルダなし";
+      const fileName = `${sanitizeFileName(folderName)}_${sanitizeFileName(unit.title)}.csv`;
+      const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      URL.revokeObjectURL(url);
+    });
   };
 
   const saveEditUnit = async () => {
     if (!editingUnit) return;
-    const parsed = parseMultilineInput(editUnitEnglish, editUnitJapanese, editUnitPhonetic);
+    const parsed = parseMultilineInput(
+      editUnitEnglish,
+      editUnitJapanese,
+      editUnitPhonetic,
+    );
     const updatedUnit = {
       ...editingUnit,
-      title: editUnitTitle.trim() || '無題',
+      title: editUnitTitle.trim() || "無題",
       folder_id: editUnitFolder || null,
       lines: parsed,
     };
-    await supabase.from('units').update(updatedUnit).eq('id', editingUnit.id);
+    await supabase.from("units").update(updatedUnit).eq("id", editingUnit.id);
     setUnits(units.map((u) => (u.id === editingUnit.id ? updatedUnit : u)));
-    setCurrentView('list');
+    setCurrentView("list");
     setEditingUnit(null);
   };
 
@@ -229,21 +309,21 @@ const [showToast, setShowToast] = useState(false);
 
           <nav className="flex gap-2">
             <button
-              onClick={() => setCurrentView('list')}
+              onClick={() => setCurrentView("list")}
               className={`px-4 py-2 rounded-lg ${
-                currentView === 'list'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-white text-gray-700 hover:bg-gray-50'
+                currentView === "list"
+                  ? "bg-blue-600 text-white"
+                  : "bg-white text-gray-700 hover:bg-gray-50"
               }`}
             >
               ユニット一覧
             </button>
             <button
-              onClick={() => setCurrentView('vocabulary')}
+              onClick={() => setCurrentView("vocabulary")}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-                currentView === 'vocabulary'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-white text-gray-700 hover:bg-gray-50'
+                currentView === "vocabulary"
+                  ? "bg-blue-600 text-white"
+                  : "bg-white text-gray-700 hover:bg-gray-50"
               }`}
             >
               <List size={20} />
@@ -251,15 +331,16 @@ const [showToast, setShowToast] = useState(false);
             </button>
           </nav>
         </div>
-        
 
         {/* === ユニット一覧 === */}
-        {currentView === 'list' && (
+        {currentView === "list" && (
           <div className="space-y-4">
             <div className="flex justify-between items-center">
-              <h2 className="text-2xl font-bold text-gray-800">学習ユニット一覧</h2>
+              <h2 className="text-2xl font-bold text-gray-800">
+                学習ユニット一覧
+              </h2>
               <button
-                onClick={() => setCurrentView('add')}
+                onClick={() => setCurrentView("add")}
                 className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
               >
                 <Plus size={20} />
@@ -304,8 +385,8 @@ const [showToast, setShowToast] = useState(false);
                   onClick={() => setSelectedFolder(null)}
                   className={`px-3 py-1 rounded-lg text-sm ${
                     selectedFolder === null
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-200 text-gray-700 hover:bg-gray-300"
                   }`}
                 >
                   すべて ({units.length})
@@ -316,8 +397,8 @@ const [showToast, setShowToast] = useState(false);
                       onClick={() => setSelectedFolder(folder.id)}
                       className={`px-3 py-1 rounded-lg text-sm ${
                         selectedFolder === folder.id
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                          ? "bg-blue-600 text-white"
+                          : "bg-gray-200 text-gray-700 hover:bg-gray-300"
                       }`}
                     >
                       {folder.name} (
@@ -356,29 +437,28 @@ const [showToast, setShowToast] = useState(false);
                         </p>
                         {unit.folder_id && (
                           <span className="inline-block mt-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
-                            {
-                              folders.find((f) => f.id === unit.folder_id)
-                                ?.name
-                            }
+                            {folders.find((f) => f.id === unit.folder_id)?.name}
                           </span>
                         )}
                       </div>
-                        <div className="flex gap-2">
+                      <div className="flex gap-2">
                         <button
-                            onClick={() => startEditUnit(unit)}
-                            className="bg-yellow-500 text-white px-4 py-2 rounded-lg hover:bg-yellow-600 font-medium"
+                          onClick={() => startEditUnit(unit)}
+                          className="bg-yellow-500 text-white px-4 py-2 rounded-lg hover:bg-yellow-600 font-medium"
                         >
-                            編集
+                          編集
                         </button>
 
                         <button
-                            onClick={() => setCurrentView('reader')}
-                            className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 font-medium"
+                          onClick={() => {
+                            setSelectedUnit(unit);
+                            setCurrentView("reader");
+                          }}
+                          className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 font-medium"
                         >
-                            学習
+                          学習
                         </button>
-                    </div>
-
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -388,12 +468,14 @@ const [showToast, setShowToast] = useState(false);
         )}
 
         {/* === ユニット追加 === */}
-        {currentView === 'add' && (
+        {currentView === "add" && (
           <div className="max-w-4xl mx-auto">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-gray-800">新規ユニット追加</h2>
+              <h2 className="text-2xl font-bold text-gray-800">
+                新規ユニット追加
+              </h2>
               <button
-                onClick={() => setCurrentView('list')}
+                onClick={() => setCurrentView("list")}
                 className="text-gray-600 hover:text-gray-800"
               >
                 <X size={24} />
@@ -476,14 +558,14 @@ const [showToast, setShowToast] = useState(false);
             </div>
           </div>
         )}
-                {/* === ユニット編集 === */}
-        {currentView === 'edit' && editingUnit && (
+        {/* === ユニット編集 === */}
+        {currentView === "edit" && editingUnit && (
           <div className="max-w-4xl mx-auto">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold text-gray-800">ユニット編集</h2>
               <button
                 onClick={() => {
-                  setCurrentView('list');
+                  setCurrentView("list");
                   setEditingUnit(null);
                 }}
                 className="text-gray-600 hover:text-gray-800"
@@ -567,7 +649,7 @@ const [showToast, setShowToast] = useState(false);
                 </button>
                 <button
                   onClick={() => {
-                    setCurrentView('list');
+                    setCurrentView("list");
                     setEditingUnit(null);
                   }}
                   className="px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50"
@@ -575,35 +657,41 @@ const [showToast, setShowToast] = useState(false);
                   キャンセル
                 </button>
               </div>
-                            <div className="flex justify-end mt-6">
+              <div className="flex justify-end mt-6">
                 <button
                   onClick={async () => {
                     if (!editingUnit) return;
-                    const ok = window.confirm(`「${editingUnit.title}」を本当に削除しますか？`);
+                    const ok = window.confirm(
+                      `「${editingUnit.title}」を本当に削除しますか？`,
+                    );
                     if (!ok) return;
 
-                    await supabase.from('units').delete().eq('id', editingUnit.id);
+                    await supabase
+                      .from("units")
+                      .delete()
+                      .eq("id", editingUnit.id);
                     setUnits(units.filter((u) => u.id !== editingUnit.id));
                     setEditingUnit(null);
-                    setCurrentView('list');
+                    setCurrentView("list");
                   }}
                   className="bg-red-600 text-white px-6 py-3 rounded-lg hover:bg-red-700"
                 >
                   削除
                 </button>
               </div>
-
             </div>
           </div>
         )}
 
         {/* === リーダー画面 === */}
-        {currentView === 'reader' && (
+        {currentView === "reader" && (
           <div className="max-w-4xl mx-auto pb-32">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-gray-800">リーディングモード</h2>
+              <h2 className="text-2xl font-bold text-gray-800">
+                リーディングモード
+              </h2>
               <button
-                onClick={() => setCurrentView('list')}
+                onClick={() => setCurrentView("list")}
                 className="text-gray-600 hover:text-gray-800"
               >
                 <X size={24} />
@@ -611,8 +699,11 @@ const [showToast, setShowToast] = useState(false);
             </div>
 
             <div className="bg-white p-6 rounded-lg shadow-md space-y-6">
-              {units[0]?.lines.map((line) => (
-                <div key={line.id} className="border-b border-gray-200 pb-4 last:border-0">
+              {selectedUnit?.lines.map((line) => (
+                <div
+                  key={line.id}
+                  className="border-b border-gray-200 pb-4 last:border-0"
+                >
                   <div
                     className="text-lg leading-relaxed select-text cursor-text mb-2"
                     onMouseUp={handleTextSelection}
@@ -620,9 +711,11 @@ const [showToast, setShowToast] = useState(false);
                     {line.english}
                   </div>
 
-
                   {line.showJapanese && line.japanese && (
-                    <div className="mt-2 p-3 bg-blue-50 rounded text-gray-700 text-sm">
+                    <div
+                      className="mt-2 p-3 bg-blue-50 rounded text-gray-700 text-sm"
+                      onMouseUp={handleTextSelection}
+                    >
                       {line.japanese}
                     </div>
                   )}
@@ -631,141 +724,154 @@ const [showToast, setShowToast] = useState(false);
                       {line.phonetic}
                     </div>
                   )}
-                    
-
                 </div>
               ))}
             </div>
 
-           <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-gray-300 shadow-lg p-4">
-                <div className="max-w-4xl mx-auto">
-                    {selectedText ? (
-                    <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded mb-3">
-                        <h3 className="font-semibold text-gray-800 mb-2">
-                        {isSelectingMeaning ? '意味を選択中' : '見出し語を選択中'}
-                        </h3>
-                        {!isSelectingMeaning && (
-                        <p className="text-sm text-gray-700 mb-2">
-                            <span className="font-medium">見出し語: </span>
-                            <span className="bg-yellow-200 px-1">{selectedText}</span>
-                        </p>
-                        )}
-                        {isSelectingMeaning && selectedMeaning && (
-                        <p className="text-sm text-gray-700 mb-2">
-                            <span className="font-medium">意味: </span>
-                            <span className="bg-blue-200 px-1">{selectedMeaning}</span>
-                        </p>
-                        )}
-                        {!isSelectingMeaning && (
-                        <p className="text-sm text-gray-600 mb-3">
-                            意味となる日本語を次に選択してください
-                        </p>
-                        )}
-                        <div className="flex gap-2">
-                        <button
-                            onClick={async () => {
-                            if (!isSelectingMeaning) {
-                                setIsSelectingMeaning(true);
-                                return;
-                            }
-                            if (!selectedMeaning) {
-                                alert('意味を選択してください');
-                                return;
-                            }
-
-                            const currentUnit = units[0];
-                            const newVocab = {
-                                word: selectedText,
-                                meaning: selectedMeaning,
-                                unit_id: currentUnit.id,
-                                unit_title: currentUnit.title,
-                            };
-
-                            const { data, error } = await supabase.from('vocabulary').insert([newVocab]).select();
-                            if (!error && data) {
-                                setVocabulary([...vocabulary, data[0]]);
-                                setShowToast(true);
-                                setTimeout(() => setShowToast(false), 2000);
-                            }
-
-                            // reset
-                            setSelectedText('');
-                            setSelectedMeaning('');
-                            setIsSelectingMeaning(false);
-                            }}
-                            disabled={isSelectingMeaning && !selectedMeaning}
-                            className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 disabled:bg-gray-400"
-                        >
-                            {isSelectingMeaning ? '単語帳に追加' : '次へ（意味を選択）'}
-                        </button>
-                        <button
-                            onClick={() => {
-                            setSelectedText('');
-                            setSelectedMeaning('');
-                            setIsSelectingMeaning(false);
-                            }}
-                            className="text-sm text-gray-600 hover:text-gray-800 px-4 py-2 border border-gray-300 rounded"
-                        >
-                            キャンセル
-                        </button>
-                        </div>
-                    </div>
-                    ) : (
-                    <div className="text-center text-sm text-gray-500 mb-3">
-                        英文をマウスで範囲選択すると、単語帳に追加できます
-                    </div>
+            <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-gray-300 shadow-lg p-4">
+              <div className="max-w-4xl mx-auto">
+                {selectedText ? (
+                  <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded mb-3">
+                    <h3 className="font-semibold text-gray-800 mb-2">
+                      {isSelectingMeaning ? "意味を選択中" : "見出し語を選択中"}
+                    </h3>
+                    {!isSelectingMeaning && (
+                      <p className="text-sm text-gray-700 mb-2">
+                        <span className="font-medium">見出し語: </span>
+                        <span className="bg-yellow-200 px-1">
+                          {selectedText}
+                        </span>
+                      </p>
                     )}
-                </div>
-                {/* === 訳・発音の表示切り替えボタン === */}
-                <div className="flex gap-3 justify-center mt-3">
-                  <button
-                    onClick={() => {
-                      const updated = units.map((u) => ({
-                        ...u,
-                        lines: u.lines.map((l) => ({
-                          ...l,
-                          showJapanese: !l.showJapanese,
-                        })),
-                      }));
-                      setUnits(updated);
-                    }}
-                    className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700"
-                  >
-                    <Eye size={20} />
-                    和訳を切り替え
-                  </button>
+                    {isSelectingMeaning && selectedMeaning && (
+                      <p className="text-sm text-gray-700 mb-2">
+                        <span className="font-medium">意味: </span>
+                        <span className="bg-blue-200 px-1">
+                          {selectedMeaning}
+                        </span>
+                      </p>
+                    )}
+                    {!isSelectingMeaning && (
+                      <p className="text-sm text-gray-600 mb-3">
+                        意味となる日本語を次に選択してください
+                      </p>
+                    )}
+                    <div className="flex gap-2">
+                      <button
+                        onClick={async () => {
+                          if (!isSelectingMeaning) {
+                            setIsSelectingMeaning(true);
+                            return;
+                          }
+                          if (!selectedMeaning) {
+                            alert("意味を選択してください");
+                            return;
+                          }
 
-                  <button
-                    onClick={() => {
-                      const updated = units.map((u) => ({
-                        ...u,
-                        lines: u.lines.map((l) => ({
-                          ...l,
-                          showPhonetic: !l.showPhonetic,
-                        })),
-                      }));
-                      setUnits(updated);
-                    }}
-                    className="flex items-center gap-2 bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700"
-                  >
-                    <EyeOff size={20} />
-                    発音を切り替え
-                  </button>
-                </div>
+                          const currentUnit = selectedUnit;
+                          if (!currentUnit) return;
+                          const newVocab = {
+                            word: selectedText,
+                            meaning: selectedMeaning,
+                            unit_id: currentUnit.id,
+                            unit_title: currentUnit.title,
+                          };
 
-                {showToast && (
-                    <div className="fixed bottom-16 left-1/2 transform -translate-x-1/2 bg-green-500 text-white px-6 py-2 rounded-lg shadow-lg transition-opacity">
-                    追加しました！
+                          const { data, error } = await supabase
+                            .from("vocabulary")
+                            .insert([newVocab])
+                            .select();
+                          if (!error && data) {
+                            setVocabulary([...vocabulary, data[0]]);
+                            setShowToast(true);
+                            setTimeout(() => setShowToast(false), 2000);
+                          }
+
+                          // reset
+                          setSelectedText("");
+                          setSelectedMeaning("");
+                          setIsSelectingMeaning(false);
+                        }}
+                        disabled={isSelectingMeaning && !selectedMeaning}
+                        className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 disabled:bg-gray-400"
+                      >
+                        {isSelectingMeaning
+                          ? "単語帳に追加"
+                          : "次へ（意味を選択）"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSelectedText("");
+                          setSelectedMeaning("");
+                          setIsSelectingMeaning(false);
+                        }}
+                        className="text-sm text-gray-600 hover:text-gray-800 px-4 py-2 border border-gray-300 rounded"
+                      >
+                        キャンセル
+                      </button>
                     </div>
+                  </div>
+                ) : (
+                  <div className="text-center text-sm text-gray-500 mb-3">
+                    英文をマウスで範囲選択すると、単語帳に追加できます
+                  </div>
                 )}
-             </div>
+              </div>
+              {/* === 訳・発音の表示切り替えボタン === */}
+              <div className="flex gap-3 justify-center mt-3">
+                <button
+                  onClick={() => {
+                    if (!selectedUnit) return;
 
+                    const updatedUnit = {
+                      ...selectedUnit,
+                      lines: selectedUnit.lines.map((l) => ({
+                        ...l,
+                        showJapanese: !l.showJapanese,
+                      })),
+                    };
+
+                    setSelectedUnit(updatedUnit);
+                  }}
+                  className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700"
+                >
+                  <Eye size={20} />
+                  和訳を切り替え
+                </button>
+
+                <button
+                  onClick={() => {
+                    if (!selectedUnit) return;
+
+                    const updatedUnit = {
+                      ...selectedUnit,
+                      lines: selectedUnit.lines.map((l) => ({
+                        ...l,
+                        showPhonetic: !l.showPhonetic,
+                      })),
+                    };
+
+                    setSelectedUnit(updatedUnit);
+                  }}
+                  className="flex items-center gap-2 bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700"
+                >
+                  <EyeOff size={20} />
+                  発音を切り替え
+                </button>
+              </div>
+
+              {showToast && (
+                <div className="fixed bottom-16 left-1/2 transform -translate-x-1/2 bg-green-500 text-white px-6 py-2 rounded-lg shadow-lg transition-opacity">
+                  追加しました！
+                </div>
+              )}
+            </div>
           </div>
         )}
 
         {/* === 単語帳＆フラッシュカード === */}
-        {currentView === 'vocabulary' && (
-          flashcardMode ? (
+        {currentView === "vocabulary" &&
+          (flashcardMode ? (
             <div className="max-w-2xl mx-auto text-center">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-bold">フラッシュカード</h2>
@@ -792,20 +898,20 @@ const [showToast, setShowToast] = useState(false);
                     {!showAnswer ? (
                       <p className="text-3xl font-bold text-gray-800">
                         {flashcardShowWord
-                          ? vocabulary[currentCardIndex].word
-                          : vocabulary[currentCardIndex].meaning}
+                          ?filteredVocabulary[currentCardIndex].word
+                          : filteredVocabulary[currentCardIndex].meaning}
                       </p>
                     ) : (
                       <div>
                         <p className="text-2xl font-bold mb-2">
                           {flashcardShowWord
-                            ? vocabulary[currentCardIndex].word
-                            : vocabulary[currentCardIndex].meaning}
+                            ? filteredVocabulary[currentCardIndex].word
+                            : filteredVocabulary[currentCardIndex].meaning}
                         </p>
                         <p className="text-lg text-gray-600">
                           {flashcardShowWord
-                            ? vocabulary[currentCardIndex].meaning
-                            : vocabulary[currentCardIndex].word}
+                            ? filteredVocabulary[currentCardIndex].meaning
+                            : filteredVocabulary[currentCardIndex].word}
                         </p>
                       </div>
                     )}
@@ -818,7 +924,9 @@ const [showToast, setShowToast] = useState(false);
                         setShowAnswer(false);
                       }}
                       className={`px-3 py-1 rounded ${
-                        flashcardShowWord ? 'bg-blue-600 text-white' : 'bg-gray-200'
+                        flashcardShowWord
+                          ? "bg-blue-600 text-white"
+                          : "bg-gray-200"
                       }`}
                     >
                       単語→意味
@@ -829,7 +937,9 @@ const [showToast, setShowToast] = useState(false);
                         setShowAnswer(false);
                       }}
                       className={`px-3 py-1 rounded ${
-                        !flashcardShowWord ? 'bg-blue-600 text-white' : 'bg-gray-200'
+                        !flashcardShowWord
+                          ? "bg-blue-600 text-white"
+                          : "bg-gray-200"
                       }`}
                     >
                       意味→単語
@@ -851,16 +961,16 @@ const [showToast, setShowToast] = useState(false);
                       onClick={() => setShowAnswer(!showAnswer)}
                       className="bg-blue-600 text-white px-4 py-2 rounded"
                     >
-                      {showAnswer ? '問題を表示' : '答えを表示'}
+                      {showAnswer ? "問題を表示" : "答えを表示"}
                     </button>
                     <button
                       onClick={() => {
-                        if (currentCardIndex < vocabulary.length - 1) {
+                        if (currentCardIndex < filteredVocabulary.length - 1) {
                           setCurrentCardIndex(currentCardIndex + 1);
                           setShowAnswer(false);
                         }
                       }}
-                      disabled={currentCardIndex === vocabulary.length - 1}
+                      disabled={currentCardIndex === filteredVocabulary.length - 1}
                       className="bg-gray-600 text-white px-4 py-2 rounded disabled:bg-gray-300"
                     >
                       次へ
@@ -873,23 +983,62 @@ const [showToast, setShowToast] = useState(false);
             <div className="max-w-5xl mx-auto">
               <div className="flex justify-between mb-4">
                 <h2 className="text-xl font-semibold">単語帳</h2>
-                <button
-                  onClick={() => {
-                    if (vocabulary.length > 0) {
-                      setFlashcardMode(true);
-                      setCurrentCardIndex(0);
-                      setShowAnswer(false);
-                    }
-                  }}
-                  disabled={vocabulary.length === 0}
-                  className="bg-purple-600 text-white px-4 py-2 rounded disabled:bg-gray-300"
-                >
-                  フラッシュカード
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={exportVocabularyCsv}
+                    disabled={filteredVocabulary.length === 0}
+                    className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded disabled:bg-gray-300"
+                  >
+                    <Save size={18} />
+                    CSV出力
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (filteredVocabulary.length > 0) {
+                        setFlashcardMode(true);
+                        setCurrentCardIndex(0);
+                        setShowAnswer(false);
+                      }
+                    }}
+                    disabled={filteredVocabulary.length === 0}
+                    className="bg-purple-600 text-white px-4 py-2 rounded disabled:bg-gray-300"
+                  >
+                    フラッシュカード
+                  </button>
+                </div>
               </div>
+              <div className="flex gap-3 mb-4">
+                <select
+                  value={vocabFolder}
+                  onChange={(e) => {
+                     setVocabFolder(e.target.value);
+                    setVocabUnit("");
+                  }}
+                   className="px-3 py-2 border border-gray-300 rounded-lg"
+                >
+                  <option value="">すべてのフォルダー</option>
+                  {folders.map((folder) => (
+                    <option key={folder.id} value={folder.id}>
+                      {folder.name}
+                    </option>
+                  ))}
+                 </select>
 
+                 <select
+                  value={vocabUnit}
+                  onChange={(e) => setVocabUnit(e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg"
+                 >
+                  <option value="">すべてのユニット</option>
+                  {vocabUnits.map((unit) => (
+                    <option key={unit.id} value={unit.id}>
+                       {unit.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div className="bg-white rounded shadow overflow-hidden">
-                {vocabulary.length === 0 ? (
+                {filteredVocabulary.length === 0 ? (
                   <div className="text-center py-10 text-gray-500">
                     <p>単語がありません</p>
                   </div>
@@ -897,14 +1046,20 @@ const [showToast, setShowToast] = useState(false);
                   <table className="w-full">
                     <thead className="bg-gray-50 border-b">
                       <tr>
-                        <th className="px-4 py-2 text-left text-sm font-medium text-gray-600">単語</th>
-                        <th className="px-4 py-2 text-left text-sm font-medium text-gray-600">意味</th>
-                        <th className="px-4 py-2 text-left text-sm font-medium text-gray-600">ユニット</th>
+                        <th className="px-4 py-2 text-left text-sm font-medium text-gray-600">
+                          単語
+                        </th>
+                        <th className="px-4 py-2 text-left text-sm font-medium text-gray-600">
+                          意味
+                        </th>
+                        <th className="px-4 py-2 text-left text-sm font-medium text-gray-600">
+                          ユニット
+                        </th>
                         <th className="px-4 py-2"></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {vocabulary.map((v) => (
+                      {filteredVocabulary.map((v) => (
                         <tr key={v.id} className="border-b">
                           <td className="px-4 py-2">{v.word}</td>
                           <td className="px-4 py-2">{v.meaning}</td>
@@ -912,8 +1067,13 @@ const [showToast, setShowToast] = useState(false);
                           <td className="px-4 py-2 text-right">
                             <button
                               onClick={async () => {
-                                await supabase.from('vocabulary').delete().eq('id', v.id);
-                                setVocabulary(vocabulary.filter((x) => x.id !== v.id));
+                                await supabase
+                                  .from("vocabulary")
+                                  .delete()
+                                  .eq("id", v.id);
+                                setVocabulary(
+                                  vocabulary.filter((x) => x.id !== v.id),
+                                );
                               }}
                               className="text-red-500 hover:text-red-700"
                             >
@@ -927,8 +1087,7 @@ const [showToast, setShowToast] = useState(false);
                 )}
               </div>
             </div>
-          )
-        )}
+          ))}
       </div>
     </div>
   );
