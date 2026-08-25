@@ -10,6 +10,7 @@ import {
   EyeOff,
   Folder,
   FolderPlus,
+  MoreVertical,
   Save,
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
@@ -57,6 +58,7 @@ export default function EnglishReadingApp() {
   const [selectedUnit, setSelectedUnit] = useState<UnitType | null>(null);
   const [newFolderName, setNewFolderName] = useState("");
   const [showFolderInput, setShowFolderInput] = useState(false);
+  const [folderMenuId, setFolderMenuId] = useState<string | null>(null);
 
   // === ユニット追加用 ===
   const [newUnitTitle, setNewUnitTitle] = useState("");
@@ -75,6 +77,8 @@ export default function EnglishReadingApp() {
   const [selectedMeaning, setSelectedMeaning] = useState("");
   const [isSelectingMeaning, setIsSelectingMeaning] = useState(false);
   const [showToast, setShowToast] = useState(false);
+  const [showAllJapanese, setShowAllJapanese] = useState(false);
+  const [showAllPhonetic, setShowAllPhonetic] = useState(false);
   const [vocabFolder, setVocabFolder] = useState("");
   const [vocabUnit, setVocabUnit] = useState("");
 
@@ -87,10 +91,6 @@ export default function EnglishReadingApp() {
   const [editUnitFolder, setEditUnitFolder] = useState("");
 
   // === 初期ロード ===
-  useEffect(() => {
-    loadAll();
-  }, []);
-
   const loadAll = async () => {
     const [fRes, uRes, vRes] = await Promise.all([
       supabase
@@ -116,11 +116,43 @@ export default function EnglishReadingApp() {
     if (vRes.data) setVocabulary(vRes.data);
   };
 
+  useEffect(() => {
+    void Promise.resolve().then(loadAll);
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = (event: PopStateEvent) => {
+      const readingUnitId = event.state?.readingUnitId as string | undefined;
+      const readingUnit = units.find((unit) => unit.id === readingUnitId);
+
+      if (readingUnit) {
+        setSelectedUnit(readingUnit);
+        setShowAllJapanese(false);
+        setShowAllPhonetic(false);
+        setCurrentView("reader");
+        return;
+      }
+
+      setSelectedUnit(null);
+      setCurrentView("list");
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [units]);
+
+  useEffect(() => {
+    if (!folderMenuId) return;
+    const closeFolderMenu = () => setFolderMenuId(null);
+    window.addEventListener("click", closeFolderMenu);
+    return () => window.removeEventListener("click", closeFolderMenu);
+  }, [folderMenuId]);
+
   // === フォルダー操作 ===
   const addFolder = async () => {
     if (!newFolderName.trim()) return;
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("folders")
       .insert([{ name: newFolderName.trim() }])
       .select(); // ← ここで select 権限が無いと失敗する
@@ -143,6 +175,29 @@ export default function EnglishReadingApp() {
     setUnits(
       units.map((u) => (u.folder_id === id ? { ...u, folder_id: null } : u)),
     );
+    if (selectedFolder === id) setSelectedFolder(null);
+    setFolderMenuId(null);
+  };
+
+  const renameFolder = async (folder: FolderType) => {
+    const name = window.prompt("新しいフォルダー名", folder.name)?.trim();
+    if (!name || name === folder.name) return;
+
+    const { error } = await supabase
+      .from("folders")
+      .update({ name })
+      .eq("id", folder.id);
+    if (error) {
+      alert(`フォルダー名の変更に失敗: ${error.message}`);
+      return;
+    }
+
+    setFolders(
+      folders.map((item) =>
+        item.id === folder.id ? { ...item, name } : item,
+      ),
+    );
+    setFolderMenuId(null);
   };
 
   // === ユニット操作 ===
@@ -182,7 +237,7 @@ export default function EnglishReadingApp() {
       lines: parsed,
     };
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("units")
       .insert([payload])
       .select();
@@ -304,12 +359,18 @@ export default function EnglishReadingApp() {
         <div className="flex justify-between items-center mb-8">
           <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-3">
             <BookOpen size={36} className="text-blue-600" />
-            英語長文学習アプリ
+            長文学習
           </h1>
 
           <nav className="flex gap-2">
             <button
-              onClick={() => setCurrentView("list")}
+              onClick={() => {
+                if (currentView === "reader") {
+                  window.history.back();
+                  return;
+                }
+                setCurrentView("list");
+              }}
               className={`px-4 py-2 rounded-lg ${
                 currentView === "list"
                   ? "bg-blue-600 text-white"
@@ -347,80 +408,127 @@ export default function EnglishReadingApp() {
                 新規ユニット追加
               </button>
             </div>
-            <div className="bg-white p-4 rounded-lg shadow-md">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-semibold text-gray-700 flex items-center gap-2">
-                  <Folder size={20} />
-                  フォルダー
-                </h3>
-                <button
-                  onClick={() => setShowFolderInput(!showFolderInput)}
-                  className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800"
-                >
-                  <FolderPlus size={16} />
-                  新規フォルダー
-                </button>
-              </div>
-
-              {showFolderInput && (
-                <div className="flex gap-2 mb-4">
-                  <input
-                    type="text"
-                    value={newFolderName}
-                    onChange={(e) => setNewFolderName(e.target.value)}
-                    placeholder="フォルダー名"
-                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                  />
+            <div className="grid gap-4 md:grid-cols-[240px_minmax(0,1fr)] items-start">
+              <aside className="bg-white p-3 rounded-lg shadow-md md:sticky md:top-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-gray-700 flex items-center gap-2">
+                    <Folder size={20} />
+                    フォルダー
+                  </h3>
                   <button
-                    onClick={addFolder}
-                    className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm"
+                    onClick={() => setShowFolderInput(!showFolderInput)}
+                    className="text-blue-600 hover:text-blue-800"
+                    aria-label="新規フォルダー"
                   >
-                    追加
+                    <FolderPlus size={18} />
                   </button>
                 </div>
-              )}
 
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => setSelectedFolder(null)}
-                  className={`px-3 py-1 rounded-lg text-sm ${
-                    selectedFolder === null
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-                  }`}
-                >
-                  すべて ({units.length})
-                </button>
-                {folders.map((folder) => (
-                  <div key={folder.id} className="flex items-center gap-1">
+                {showFolderInput && (
+                  <div className="flex gap-2 mb-3">
+                    <input
+                      type="text"
+                      value={newFolderName}
+                      onChange={(e) => setNewFolderName(e.target.value)}
+                      placeholder="フォルダー名"
+                      className="min-w-0 flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
+                    />
                     <button
-                      onClick={() => setSelectedFolder(folder.id)}
-                      className={`px-3 py-1 rounded-lg text-sm ${
-                        selectedFolder === folder.id
-                          ? "bg-blue-600 text-white"
-                          : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-                      }`}
+                      onClick={addFolder}
+                      className="bg-blue-600 text-white px-2 py-1.5 rounded hover:bg-blue-700 text-sm"
                     >
-                      {folder.name} (
-                      {units.filter((u) => u.folder_id === folder.id).length})
-                    </button>
-                    <button
-                      onClick={() => deleteFolder(folder.id)}
-                      className="text-red-600 hover:text-red-800"
-                    >
-                      <X size={16} />
+                      追加
                     </button>
                   </div>
-                ))}
-              </div>
-            </div>
+                )}
 
-            {getFilteredUnits().length === 0 ? (
+                <div className="space-y-1">
+                  <button
+                    onClick={() => setSelectedFolder(null)}
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded text-sm ${
+                      selectedFolder === null
+                        ? "bg-blue-100 text-blue-800 font-medium"
+                        : "text-gray-700 hover:bg-gray-100"
+                    }`}
+                  >
+                    <span>すべて</span>
+                    <span className="text-xs opacity-70">{units.length}</span>
+                  </button>
+                  {folders.map((folder) => (
+                    <div
+                      key={folder.id}
+                      className="relative flex items-center"
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setFolderMenuId(folder.id);
+                      }}
+                    >
+                      <button
+                        onClick={() => setSelectedFolder(folder.id)}
+                        className={`min-w-0 flex-1 flex items-center justify-between gap-2 px-3 py-2 rounded text-sm ${
+                          selectedFolder === folder.id
+                            ? "bg-blue-100 text-blue-800 font-medium"
+                            : "text-gray-700 hover:bg-gray-100"
+                        }`}
+                      >
+                        <span className="truncate">{folder.name}</span>
+                        <span className="text-xs opacity-70">
+                          {units.filter((u) => u.folder_id === folder.id).length}
+                        </span>
+                      </button>
+                      <button
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setFolderMenuId(
+                            folderMenuId === folder.id ? null : folder.id,
+                          );
+                        }}
+                        className="p-1 text-gray-500 hover:text-gray-800"
+                        aria-label={`${folder.name}のメニュー`}
+                      >
+                        <MoreVertical size={16} />
+                      </button>
+
+                      {folderMenuId === folder.id && (
+                        <div
+                          className="absolute right-0 top-full z-20 w-32 rounded-md border border-gray-200 bg-white py-1 shadow-lg"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <button
+                            onClick={() => renameFolder(folder)}
+                            className="block w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                          >
+                            名前を変更
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (
+                                window.confirm(
+                                  `「${folder.name}」を削除しますか？`,
+                                )
+                              ) {
+                                void deleteFolder(folder.id);
+                              }
+                            }}
+                            className="block w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                          >
+                            削除
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </aside>
+
+              <main>
+                {getFilteredUnits().length === 0 ? (
               <div className="text-center py-12 text-gray-500 bg-white rounded-lg shadow-md">
                 <BookOpen size={48} className="mx-auto mb-4 opacity-50" />
                 <p>ユニットがありません。新規追加してください。</p>
               </div>
-            ) : (
+                ) : (
               <div className="grid gap-4">
                 {getFilteredUnits().map((unit) => (
                   <div
@@ -451,7 +559,14 @@ export default function EnglishReadingApp() {
 
                         <button
                           onClick={() => {
+                            window.history.pushState(
+                              { readingUnitId: unit.id },
+                              "",
+                              `?unit=${encodeURIComponent(unit.id)}`,
+                            );
                             setSelectedUnit(unit);
+                            setShowAllJapanese(false);
+                            setShowAllPhonetic(false);
                             setCurrentView("reader");
                           }}
                           className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 font-medium"
@@ -463,7 +578,9 @@ export default function EnglishReadingApp() {
                   </div>
                 ))}
               </div>
-            )}
+                )}
+              </main>
+            </div>
           </div>
         )}
 
@@ -685,52 +802,89 @@ export default function EnglishReadingApp() {
 
         {/* === リーダー画面 === */}
         {currentView === "reader" && (
-          <div className="max-w-4xl mx-auto pb-32">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-gray-800">
-                リーディングモード
-              </h2>
-              <button
-                onClick={() => setCurrentView("list")}
-                className="text-gray-600 hover:text-gray-800"
-              >
-                <X size={24} />
-              </button>
-            </div>
+          <div className="max-w-4xl mx-auto pb-20">
+            <div className="bg-white p-4 rounded-lg shadow-md space-y-3">
+              {selectedUnit?.lines.map((line) => {
+                const englishWords = line.english.trim().split(/\s+/);
+                const phoneticWords = line.phonetic.trim().split(/\s+/);
+                const canAlignPhonetic =
+                  line.showPhonetic &&
+                  line.phonetic &&
+                  englishWords.length === phoneticWords.length;
 
-            <div className="bg-white p-6 rounded-lg shadow-md space-y-6">
-              {selectedUnit?.lines.map((line) => (
-                <div
-                  key={line.id}
-                  className="border-b border-gray-200 pb-4 last:border-0"
-                >
+                return (
                   <div
-                    className="text-lg leading-relaxed select-text cursor-text mb-2"
-                    onMouseUp={handleTextSelection}
-                  >
-                    {line.english}
-                  </div>
+                    key={line.id}
+                    className="border-b border-gray-200 pb-3 last:border-0"
+                    onClick={() => {
+                      if (window.getSelection()?.toString().trim()) return;
+                      if (!selectedUnit) return;
 
-                  {line.showJapanese && line.japanese && (
+                      const shouldShowBoth = !(
+                        line.showJapanese && line.showPhonetic
+                      );
+                      setSelectedUnit({
+                        ...selectedUnit,
+                        lines: selectedUnit.lines.map((item) =>
+                          item.id === line.id
+                            ? {
+                                ...item,
+                                showJapanese: shouldShowBoth,
+                                showPhonetic: shouldShowBoth,
+                              }
+                            : item,
+                        ),
+                      });
+                    }}
+                  >
                     <div
-                      className="mt-2 p-3 bg-blue-50 rounded text-gray-700 text-sm"
+                      className="select-text cursor-text"
                       onMouseUp={handleTextSelection}
                     >
-                      {line.japanese}
+                      {line.showPhonetic && line.phonetic && !canAlignPhonetic && (
+                        <div className="mb-1 text-sm leading-snug text-gray-500">
+                          {line.phonetic}
+                        </div>
+                      )}
+                      {canAlignPhonetic ? (
+                        <div className="flex flex-wrap items-end gap-x-2 gap-y-1 text-lg leading-snug">
+                          {englishWords.map((word, index) => (
+                            <span
+                              key={`${line.id}-${index}`}
+                              data-phonetic={phoneticWords[index]}
+                              className="inline-flex flex-col items-center before:content-[attr(data-phonetic)] before:text-sm before:font-normal before:leading-snug before:text-gray-500"
+                            >
+                              {word}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-lg leading-snug">{line.english}</div>
+                      )}
                     </div>
-                  )}
-                  {line.showPhonetic && line.phonetic && (
-                    <div className="mt-2 p-3 bg-green-50 rounded text-gray-600 text-sm">
-                      {line.phonetic}
-                    </div>
-                  )}
-                </div>
-              ))}
+
+                    {line.showJapanese && line.japanese && (
+                      <div
+                        className="mt-1 p-2 bg-blue-50 rounded text-gray-700 text-sm"
+                        onMouseUp={handleTextSelection}
+                      >
+                        {line.japanese}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
 
-            <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-gray-300 shadow-lg p-4">
+            <div
+              className={
+                selectedText
+                  ? "fixed bottom-0 left-0 right-0 bg-white border-t-2 border-gray-300 shadow-lg p-4 pr-24"
+                  : "contents"
+              }
+            >
               <div className="max-w-4xl mx-auto">
-                {selectedText ? (
+                {selectedText && (
                   <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded mb-3">
                     <h3 className="font-semibold text-gray-800 mb-2">
                       {isSelectingMeaning ? "意味を選択中" : "見出し語を選択中"}
@@ -811,52 +965,56 @@ export default function EnglishReadingApp() {
                       </button>
                     </div>
                   </div>
-                ) : (
-                  <div className="text-center text-sm text-gray-500 mb-3">
-                    英文をマウスで範囲選択すると、単語帳に追加できます
-                  </div>
                 )}
               </div>
               {/* === 訳・発音の表示切り替えボタン === */}
-              <div className="flex gap-3 justify-center mt-3">
+              <div className="fixed right-3 bottom-3 z-50 flex flex-col gap-2">
                 <button
                   onClick={() => {
                     if (!selectedUnit) return;
+                    const nextShowAllJapanese = !showAllJapanese;
 
                     const updatedUnit = {
                       ...selectedUnit,
                       lines: selectedUnit.lines.map((l) => ({
                         ...l,
-                        showJapanese: !l.showJapanese,
+                        showJapanese: nextShowAllJapanese,
                       })),
                     };
 
                     setSelectedUnit(updatedUnit);
+                    setShowAllJapanese(nextShowAllJapanese);
                   }}
-                  className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700"
+                  className={`flex items-center gap-1 bg-blue-600 text-white px-3 py-2 rounded-lg shadow-md hover:bg-blue-700 text-sm ${
+                    showAllJapanese ? "opacity-100" : "opacity-50"
+                  }`}
                 >
-                  <Eye size={20} />
-                  和訳を切り替え
+                  <Eye size={16} />
+                  訳
                 </button>
 
                 <button
                   onClick={() => {
                     if (!selectedUnit) return;
+                    const nextShowAllPhonetic = !showAllPhonetic;
 
                     const updatedUnit = {
                       ...selectedUnit,
                       lines: selectedUnit.lines.map((l) => ({
                         ...l,
-                        showPhonetic: !l.showPhonetic,
+                        showPhonetic: nextShowAllPhonetic,
                       })),
                     };
 
                     setSelectedUnit(updatedUnit);
+                    setShowAllPhonetic(nextShowAllPhonetic);
                   }}
-                  className="flex items-center gap-2 bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700"
+                  className={`flex items-center gap-1 bg-green-600 text-white px-3 py-2 rounded-lg shadow-md hover:bg-green-700 text-sm ${
+                    showAllPhonetic ? "opacity-100" : "opacity-50"
+                  }`}
                 >
-                  <EyeOff size={20} />
-                  発音を切り替え
+                  <EyeOff size={16} />
+                  発音
                 </button>
               </div>
 
