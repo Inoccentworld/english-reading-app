@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
 import {
   BookOpen,
   Plus,
@@ -46,6 +47,11 @@ type VocabularyType = {
   created_at?: string;
 };
 
+type AiMessage = {
+  role: "user" | "model";
+  text: string;
+};
+
 // === メインコンポーネント ==============================
 export default function EnglishReadingApp() {
   const [folders, setFolders] = useState<FolderType[]>([]);
@@ -74,13 +80,28 @@ export default function EnglishReadingApp() {
   const [flashcardShowWord, setFlashcardShowWord] = useState(true);
   // 単語追加用
   const [selectedText, setSelectedText] = useState("");
+  const [newVocabularyWord, setNewVocabularyWord] = useState("");
   const [selectedMeaning, setSelectedMeaning] = useState("");
+  const [selectedLineId, setSelectedLineId] = useState<number | null>(null);
   const [isSelectingMeaning, setIsSelectingMeaning] = useState(false);
+  const [showVocabularyForm, setShowVocabularyForm] = useState(false);
+  const [hasStartedAi, setHasStartedAi] = useState(false);
+  const [aiSubject, setAiSubject] = useState("");
+  const [aiLineId, setAiLineId] = useState<number | null>(null);
+  const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
+  const [aiQuestion, setAiQuestion] = useState("");
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
   const [showToast, setShowToast] = useState(false);
   const [showAllJapanese, setShowAllJapanese] = useState(false);
   const [showAllPhonetic, setShowAllPhonetic] = useState(false);
   const [vocabFolder, setVocabFolder] = useState("");
   const [vocabUnit, setVocabUnit] = useState("");
+  const [vocabularyMenuId, setVocabularyMenuId] = useState<string | null>(null);
+  const [editingVocabulary, setEditingVocabulary] =
+    useState<VocabularyType | null>(null);
+  const [editVocabularyWord, setEditVocabularyWord] = useState("");
+  const [editVocabularyMeaning, setEditVocabularyMeaning] = useState("");
 
   // 編集用 state
   const [editingUnit, setEditingUnit] = useState<UnitType | null>(null);
@@ -89,6 +110,23 @@ export default function EnglishReadingApp() {
   const [editUnitJapanese, setEditUnitJapanese] = useState("");
   const [editUnitPhonetic, setEditUnitPhonetic] = useState("");
   const [editUnitFolder, setEditUnitFolder] = useState("");
+
+  const hasUnitUnsavedChanges = Boolean(
+    editingUnit &&
+      (editUnitTitle !== editingUnit.title ||
+        editUnitFolder !== (editingUnit.folder_id || "") ||
+        editUnitEnglish !==
+          editingUnit.lines.map((line) => line.english).join("\n") ||
+        editUnitJapanese !==
+          editingUnit.lines.map((line) => line.japanese).join("\n") ||
+        editUnitPhonetic !==
+          editingUnit.lines.map((line) => line.phonetic).join("\n")),
+  );
+  const hasVocabularyUnsavedChanges = Boolean(
+    editingVocabulary &&
+      (editVocabularyWord !== editingVocabulary.word ||
+        editVocabularyMeaning !== editingVocabulary.meaning),
+  );
 
   // === 初期ロード ===
   const loadAll = async () => {
@@ -147,6 +185,24 @@ export default function EnglishReadingApp() {
     window.addEventListener("click", closeFolderMenu);
     return () => window.removeEventListener("click", closeFolderMenu);
   }, [folderMenuId]);
+
+  useEffect(() => {
+    if (!vocabularyMenuId) return;
+    const closeVocabularyMenu = () => setVocabularyMenuId(null);
+    window.addEventListener("click", closeVocabularyMenu);
+    return () => window.removeEventListener("click", closeVocabularyMenu);
+  }, [vocabularyMenuId]);
+
+  useEffect(() => {
+    if (!hasUnitUnsavedChanges && !hasVocabularyUnsavedChanges) return;
+
+    const confirmBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = true;
+    };
+    window.addEventListener("beforeunload", confirmBeforeUnload);
+    return () => window.removeEventListener("beforeunload", confirmBeforeUnload);
+  }, [hasUnitUnsavedChanges, hasVocabularyUnsavedChanges]);
 
   // === フォルダー操作 ===
   const addFolder = async () => {
@@ -256,7 +312,7 @@ export default function EnglishReadingApp() {
     setNewUnitFolder("");
     setCurrentView("list");
   };
-  const handleTextSelection = () => {
+  const handleTextSelection = (lineId: number) => {
     const selection = window.getSelection();
     const text = selection?.toString().trim();
     if (text) {
@@ -264,8 +320,79 @@ export default function EnglishReadingApp() {
         setSelectedMeaning(text);
       } else {
         setSelectedText(text);
+        setSelectedLineId(lineId);
+        if (showVocabularyForm) setNewVocabularyWord(text);
       }
     }
+  };
+
+  const requestAiExplanation = async (
+    messages: AiMessage[],
+    subject = aiSubject,
+    lineId = aiLineId,
+  ) => {
+    if (!selectedUnit || lineId === null || !subject.trim()) return;
+    const lineIndex = selectedUnit.lines.findIndex(
+      (line) => line.id === lineId,
+    );
+    const formatLine = (line: UnitType["lines"][number] | undefined) =>
+      line
+        ? [line.english, line.japanese ? `和訳: ${line.japanese}` : ""]
+            .filter(Boolean)
+            .join("\n")
+        : "";
+
+    setIsAiLoading(true);
+    setAiError("");
+    try {
+      const response = await fetch("/api/explain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          selection: subject.trim(),
+          context: {
+            previous: formatLine(selectedUnit.lines[lineIndex - 1]),
+            current: formatLine(selectedUnit.lines[lineIndex]),
+            next: formatLine(selectedUnit.lines[lineIndex + 1]),
+          },
+          messages,
+        }),
+      });
+      const result = (await response.json()) as { text?: string; error?: string };
+      if (!response.ok || !result.text) {
+        throw new Error(result.error || "AI解説を取得できませんでした");
+      }
+      setAiMessages([...messages, { role: "model", text: result.text }]);
+    } catch (error) {
+      setAiError(
+        error instanceof Error ? error.message : "AI解説を取得できませんでした",
+      );
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
+  const askAiFollowUp = async () => {
+    const question = aiQuestion.trim();
+    if (!question || isAiLoading) return;
+    const messages = [...aiMessages, { role: "user" as const, text: question }];
+    setAiQuestion("");
+    setAiMessages(messages);
+    await requestAiExplanation(messages);
+  };
+
+  const handleAiResponseSelection = () => {
+    const text = window.getSelection()?.toString().trim();
+    if (!text) return;
+    if (showVocabularyForm && isSelectingMeaning) {
+      setSelectedMeaning(text);
+      return;
+    }
+    if (showVocabularyForm) {
+      setNewVocabularyWord(text);
+      return;
+    }
+    setSelectedText(text);
   };
 
   const getFilteredUnits = () =>
@@ -280,6 +407,89 @@ export default function EnglishReadingApp() {
     setEditUnitJapanese(unit.lines.map((l) => l.japanese).join("\n"));
     setEditUnitPhonetic(unit.lines.map((l) => l.phonetic).join("\n"));
     setCurrentView("edit");
+  };
+
+  const cancelUnitEdit = () => {
+    if (
+      hasUnitUnsavedChanges &&
+      !window.confirm("変更を保存せずに終了しますか？")
+    ) {
+      return false;
+    }
+    setCurrentView("list");
+    setEditingUnit(null);
+    return true;
+  };
+
+  const cancelVocabularyEdit = () => {
+    if (
+      hasVocabularyUnsavedChanges &&
+      !window.confirm("変更を保存せずに終了しますか？")
+    ) {
+      return false;
+    }
+    setEditingVocabulary(null);
+    setEditVocabularyWord("");
+    setEditVocabularyMeaning("");
+    return true;
+  };
+
+  const startVocabularyEdit = (item: VocabularyType) => {
+    if (editingVocabulary?.id !== item.id && !cancelVocabularyEdit()) return;
+    setEditingVocabulary(item);
+    setEditVocabularyWord(item.word);
+    setEditVocabularyMeaning(item.meaning);
+    setVocabularyMenuId(null);
+  };
+
+  const saveVocabularyEdit = async () => {
+    if (!editingVocabulary) return;
+    const word = editVocabularyWord.trim();
+    const meaning = editVocabularyMeaning.trim();
+    if (!word || !meaning) {
+      alert("見出し語と意味を入力してください");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("vocabulary")
+      .update({ word, meaning })
+      .eq("id", editingVocabulary.id);
+    if (error) {
+      alert(`単語の更新に失敗: ${error.message}`);
+      return;
+    }
+
+    setVocabulary(
+      vocabulary.map((item) =>
+        item.id === editingVocabulary.id ? { ...item, word, meaning } : item,
+      ),
+    );
+    setEditingVocabulary(null);
+    setEditVocabularyWord("");
+    setEditVocabularyMeaning("");
+  };
+
+  const deleteVocabulary = async (item: VocabularyType) => {
+    if (editingVocabulary?.id !== item.id && !cancelVocabularyEdit()) return;
+    if (!window.confirm(`「${item.word}」を削除しますか？`)) return;
+
+    const { error } = await supabase
+      .from("vocabulary")
+      .delete()
+      .eq("id", item.id);
+    if (error) {
+      alert(`単語の削除に失敗: ${error.message}`);
+      return;
+    }
+
+    setVocabulary(vocabulary.filter((entry) => entry.id !== item.id));
+    if (editingVocabulary?.id === item.id) {
+      setEditingVocabulary(null);
+      setEditVocabularyWord("");
+      setEditVocabularyMeaning("");
+    }
+    setVocabularyMenuId(null);
   };
   const vocabUnits = vocabFolder
     ? units.filter((u) => u.folder_id === vocabFolder)
@@ -369,6 +579,10 @@ export default function EnglishReadingApp() {
                   window.history.back();
                   return;
                 }
+                if (currentView === "edit" && !cancelUnitEdit()) return;
+                if (currentView === "vocabulary" && !cancelVocabularyEdit()) {
+                  return;
+                }
                 setCurrentView("list");
               }}
               className={`px-4 py-2 rounded-lg ${
@@ -380,7 +594,10 @@ export default function EnglishReadingApp() {
               ユニット一覧
             </button>
             <button
-              onClick={() => setCurrentView("vocabulary")}
+              onClick={() => {
+                if (currentView === "edit" && !cancelUnitEdit()) return;
+                setCurrentView("vocabulary");
+              }}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
                 currentView === "vocabulary"
                   ? "bg-blue-600 text-white"
@@ -681,10 +898,7 @@ export default function EnglishReadingApp() {
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold text-gray-800">ユニット編集</h2>
               <button
-                onClick={() => {
-                  setCurrentView("list");
-                  setEditingUnit(null);
-                }}
+                onClick={cancelUnitEdit}
                 className="text-gray-600 hover:text-gray-800"
               >
                 <X size={24} />
@@ -765,10 +979,7 @@ export default function EnglishReadingApp() {
                   保存
                 </button>
                 <button
-                  onClick={() => {
-                    setCurrentView("list");
-                    setEditingUnit(null);
-                  }}
+                  onClick={cancelUnitEdit}
                   className="px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50"
                 >
                   キャンセル
@@ -839,7 +1050,7 @@ export default function EnglishReadingApp() {
                   >
                     <div
                       className="select-text cursor-text"
-                      onMouseUp={handleTextSelection}
+                      onMouseUp={() => handleTextSelection(line.id)}
                     >
                       {line.showPhonetic && line.phonetic && !canAlignPhonetic && (
                         <div className="mb-1 text-sm leading-snug text-gray-500">
@@ -866,7 +1077,7 @@ export default function EnglishReadingApp() {
                     {line.showJapanese && line.japanese && (
                       <div
                         className="mt-1 p-2 bg-blue-50 rounded text-gray-700 text-sm"
-                        onMouseUp={handleTextSelection}
+                        onMouseUp={() => handleTextSelection(line.id)}
                       >
                         {line.japanese}
                       </div>
@@ -887,83 +1098,271 @@ export default function EnglishReadingApp() {
                 {selectedText && (
                   <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded mb-3">
                     <h3 className="font-semibold text-gray-800 mb-2">
-                      {isSelectingMeaning ? "意味を選択中" : "見出し語を選択中"}
+                      選択: {selectedText}
                     </h3>
-                    {!isSelectingMeaning && (
-                      <p className="text-sm text-gray-700 mb-2">
-                        <span className="font-medium">見出し語: </span>
-                        <span className="bg-yellow-200 px-1">
-                          {selectedText}
-                        </span>
-                      </p>
-                    )}
-                    {isSelectingMeaning && selectedMeaning && (
-                      <p className="text-sm text-gray-700 mb-2">
-                        <span className="font-medium">意味: </span>
-                        <span className="bg-blue-200 px-1">
-                          {selectedMeaning}
-                        </span>
-                      </p>
-                    )}
-                    {!isSelectingMeaning && (
-                      <p className="text-sm text-gray-600 mb-3">
-                        意味となる日本語を次に選択してください
-                      </p>
-                    )}
-                    <div className="flex gap-2">
-                      <button
-                        onClick={async () => {
-                          if (!isSelectingMeaning) {
-                            setIsSelectingMeaning(true);
-                            return;
+                    <div className="flex flex-wrap gap-2">
+                      {!showVocabularyForm && (
+                        <button
+                          onClick={() => {
+                            setNewVocabularyWord(selectedText);
+                            setShowVocabularyForm(true);
+                          }}
+                          className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700"
+                        >
+                          単語帳に追加
+                        </button>
+                      )}
+                      {!hasStartedAi && (
+                        <button
+                          onClick={() => {
+                            const subject = selectedText.trim();
+                            const lineId = selectedLineId;
+                            setHasStartedAi(true);
+                            setAiSubject(subject);
+                            setAiLineId(lineId);
+                            setAiMessages([]);
+                            void requestAiExplanation([], subject, lineId);
+                          }}
+                          disabled={
+                            isAiLoading ||
+                            selectedLineId === null ||
+                            !selectedText.trim()
                           }
-                          if (!selectedMeaning) {
-                            alert("意味を選択してください");
-                            return;
-                          }
-
-                          const currentUnit = selectedUnit;
-                          if (!currentUnit) return;
-                          const newVocab = {
-                            word: selectedText,
-                            meaning: selectedMeaning,
-                            unit_id: currentUnit.id,
-                            unit_title: currentUnit.title,
-                          };
-
-                          const { data, error } = await supabase
-                            .from("vocabulary")
-                            .insert([newVocab])
-                            .select();
-                          if (!error && data) {
-                            setVocabulary([...vocabulary, data[0]]);
-                            setShowToast(true);
-                            setTimeout(() => setShowToast(false), 2000);
-                          }
-
-                          // reset
-                          setSelectedText("");
-                          setSelectedMeaning("");
-                          setIsSelectingMeaning(false);
-                        }}
-                        disabled={isSelectingMeaning && !selectedMeaning}
-                        className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 disabled:bg-gray-400"
-                      >
-                        {isSelectingMeaning
-                          ? "単語帳に追加"
-                          : "次へ（意味を選択）"}
-                      </button>
+                          className="bg-purple-600 text-white px-4 py-2 rounded text-sm hover:bg-purple-700 disabled:bg-gray-400"
+                        >
+                          AI解説
+                        </button>
+                      )}
+                      {hasStartedAi && aiError && aiMessages.length === 0 && (
+                        <button
+                          onClick={() => void requestAiExplanation([])}
+                          disabled={isAiLoading}
+                          className="bg-purple-600 text-white px-4 py-2 rounded text-sm hover:bg-purple-700 disabled:bg-gray-400"
+                        >
+                          再試行
+                        </button>
+                      )}
                       <button
                         onClick={() => {
                           setSelectedText("");
+                          setNewVocabularyWord("");
                           setSelectedMeaning("");
                           setIsSelectingMeaning(false);
+                          setSelectedLineId(null);
+                          setShowVocabularyForm(false);
+                          setHasStartedAi(false);
+                          setAiSubject("");
+                          setAiLineId(null);
+                          setAiMessages([]);
+                          setAiQuestion("");
+                          setAiError("");
                         }}
-                        className="text-sm text-gray-600 hover:text-gray-800 px-4 py-2 border border-gray-300 rounded"
+                        className="text-sm text-gray-600 hover:text-gray-800 px-3 py-2 border border-gray-300 rounded"
+                        aria-label="選択を閉じる"
                       >
-                        キャンセル
+                        <X size={16} />
                       </button>
                     </div>
+
+                    {showVocabularyForm && (
+                      <div className="mt-3 rounded border border-yellow-200 bg-white/70 p-3">
+                        <label className="block text-sm text-gray-700 mb-2">
+                          <span className="block font-medium mb-1">見出し語</span>
+                          <input
+                            type="text"
+                            value={newVocabularyWord}
+                            onChange={(event) =>
+                              setNewVocabularyWord(event.target.value)
+                            }
+                            className="w-full rounded border border-yellow-300 bg-white px-3 py-2"
+                          />
+                        </label>
+                        {isSelectingMeaning && (
+                          <label className="block text-sm text-gray-700 mb-2">
+                            <span className="block font-medium mb-1">意味</span>
+                            <input
+                              type="text"
+                              value={selectedMeaning}
+                              onChange={(event) =>
+                                setSelectedMeaning(event.target.value)
+                              }
+                              className="w-full rounded border border-blue-300 bg-white px-3 py-2"
+                              placeholder="和訳を選択するか入力してください"
+                            />
+                          </label>
+                        )}
+                        {!isSelectingMeaning && (
+                          <p className="text-sm text-gray-600 mb-3">
+                            意味となる日本語を次に選択してください
+                          </p>
+                        )}
+                        <button
+                          onClick={async () => {
+                            if (!isSelectingMeaning) {
+                              setIsSelectingMeaning(true);
+                              return;
+                            }
+                            const word = newVocabularyWord.trim();
+                            const meaning = selectedMeaning.trim();
+                            if (!word || !meaning) {
+                              alert("見出し語と意味を入力してください");
+                              return;
+                            }
+
+                            const currentUnit = selectedUnit;
+                            if (!currentUnit) return;
+                            const newVocab = {
+                              word,
+                              meaning,
+                              unit_id: currentUnit.id,
+                              unit_title: currentUnit.title,
+                            };
+
+                            const { data, error } = await supabase
+                              .from("vocabulary")
+                              .insert([newVocab])
+                              .select();
+                            if (error) {
+                              alert(`単語の追加に失敗: ${error.message}`);
+                              return;
+                            }
+                            if (data) {
+                              setVocabulary([...vocabulary, data[0]]);
+                              setShowToast(true);
+                              setTimeout(() => setShowToast(false), 2000);
+                            }
+
+                            setNewVocabularyWord("");
+                            setSelectedMeaning("");
+                            setIsSelectingMeaning(false);
+                            setShowVocabularyForm(false);
+                          }}
+                          disabled={
+                            isSelectingMeaning &&
+                            (!newVocabularyWord.trim() ||
+                              !selectedMeaning.trim())
+                          }
+                          className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 disabled:bg-gray-400"
+                        >
+                          {isSelectingMeaning
+                            ? "単語帳に登録"
+                            : "次へ（意味を選択）"}
+                        </button>
+                      </div>
+                    )}
+
+                    {aiError && (
+                      <div className="mt-3 rounded bg-red-50 p-3 text-sm text-red-700">
+                        {aiError}
+                      </div>
+                    )}
+
+                    {hasStartedAi &&
+                      isAiLoading &&
+                      aiMessages.length === 0 && (
+                        <p className="mt-3 text-sm text-purple-700">解説中...</p>
+                      )}
+
+                    {aiMessages.length > 0 && (
+                      <div className="mt-4 space-y-3 border-t border-yellow-200 pt-4">
+                        <h4 className="font-semibold text-gray-800">AI解説</h4>
+                        <div className="max-h-[32vh] space-y-3 overflow-y-auto pr-1 md:max-h-[40vh]">
+                          {aiMessages.map((message, index) => (
+                          <div
+                            key={`${message.role}-${index}`}
+                            className={`rounded p-3 text-sm leading-relaxed ${
+                              message.role === "user"
+                                ? "ml-8 whitespace-pre-wrap bg-gray-100 text-gray-700"
+                                : "bg-purple-50 text-gray-800 select-text"
+                            }`}
+                            onMouseUp={
+                              message.role === "model"
+                                ? handleAiResponseSelection
+                                : undefined
+                            }
+                          >
+                            {message.role === "model" ? (
+                              <ReactMarkdown
+                                components={{
+                                  h1: ({ children }) => (
+                                    <h1 className="mb-2 mt-4 text-xl font-bold first:mt-0">
+                                      {children}
+                                    </h1>
+                                  ),
+                                  h2: ({ children }) => (
+                                    <h2 className="mb-2 mt-4 text-lg font-bold first:mt-0">
+                                      {children}
+                                    </h2>
+                                  ),
+                                  h3: ({ children }) => (
+                                    <h3 className="mb-1.5 mt-3 font-bold first:mt-0">
+                                      {children}
+                                    </h3>
+                                  ),
+                                  p: ({ children }) => (
+                                    <p className="mb-2 last:mb-0">{children}</p>
+                                  ),
+                                  ul: ({ children }) => (
+                                    <ul className="mb-2 list-disc space-y-1 pl-5">
+                                      {children}
+                                    </ul>
+                                  ),
+                                  ol: ({ children }) => (
+                                    <ol className="mb-2 list-decimal space-y-1 pl-5">
+                                      {children}
+                                    </ol>
+                                  ),
+                                  strong: ({ children }) => (
+                                    <strong className="font-bold text-gray-900">
+                                      {children}
+                                    </strong>
+                                  ),
+                                  blockquote: ({ children }) => (
+                                    <blockquote className="my-2 border-l-4 border-purple-300 pl-3 text-gray-600">
+                                      {children}
+                                    </blockquote>
+                                  ),
+                                }}
+                              >
+                                {message.text}
+                              </ReactMarkdown>
+                            ) : (
+                              message.text
+                            )}
+                          </div>
+                          ))}
+
+                          {isAiLoading && (
+                            <p className="text-sm text-purple-700">回答中...</p>
+                          )}
+                        </div>
+
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={aiQuestion}
+                            onChange={(event) =>
+                              setAiQuestion(event.target.value)
+                            }
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                void askAiFollowUp();
+                              }
+                            }}
+                            placeholder="さらに質問する"
+                            className="min-w-0 flex-1 rounded border border-gray-300 bg-white px-3 py-2 text-sm"
+                          />
+                          <button
+                            onClick={() => void askAiFollowUp()}
+                            disabled={!aiQuestion.trim() || isAiLoading}
+                            className="rounded bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:bg-gray-400"
+                          >
+                            質問
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1152,6 +1551,7 @@ export default function EnglishReadingApp() {
                   </button>
                   <button
                     onClick={() => {
+                      if (!cancelVocabularyEdit()) return;
                       if (filteredVocabulary.length > 0) {
                         setFlashcardMode(true);
                         setCurrentCardIndex(0);
@@ -1169,6 +1569,7 @@ export default function EnglishReadingApp() {
                 <select
                   value={vocabFolder}
                   onChange={(e) => {
+                    if (!cancelVocabularyEdit()) return;
                      setVocabFolder(e.target.value);
                     setVocabUnit("");
                   }}
@@ -1184,7 +1585,10 @@ export default function EnglishReadingApp() {
 
                  <select
                   value={vocabUnit}
-                  onChange={(e) => setVocabUnit(e.target.value)}
+                  onChange={(e) => {
+                    if (!cancelVocabularyEdit()) return;
+                    setVocabUnit(e.target.value);
+                  }}
                   className="px-3 py-2 border border-gray-300 rounded-lg"
                  >
                   <option value="">すべてのユニット</option>
@@ -1195,7 +1599,7 @@ export default function EnglishReadingApp() {
                   ))}
                 </select>
               </div>
-              <div className="bg-white rounded shadow overflow-hidden">
+              <div className="bg-white rounded shadow">
                 {filteredVocabulary.length === 0 ? (
                   <div className="text-center py-10 text-gray-500">
                     <p>単語がありません</p>
@@ -1218,25 +1622,95 @@ export default function EnglishReadingApp() {
                     </thead>
                     <tbody>
                       {filteredVocabulary.map((v) => (
-                        <tr key={v.id} className="border-b">
-                          <td className="px-4 py-2">{v.word}</td>
-                          <td className="px-4 py-2">{v.meaning}</td>
+                        <tr
+                          key={v.id}
+                          className="border-b"
+                          onContextMenu={(event) => {
+                            if (editingVocabulary?.id === v.id) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setVocabularyMenuId(v.id);
+                          }}
+                        >
+                          <td className="px-4 py-2">
+                            {editingVocabulary?.id === v.id ? (
+                              <input
+                                type="text"
+                                value={editVocabularyWord}
+                                onChange={(event) =>
+                                  setEditVocabularyWord(event.target.value)
+                                }
+                                className="w-full rounded border border-gray-300 px-2 py-1"
+                              />
+                            ) : (
+                              v.word
+                            )}
+                          </td>
+                          <td className="px-4 py-2">
+                            {editingVocabulary?.id === v.id ? (
+                              <input
+                                type="text"
+                                value={editVocabularyMeaning}
+                                onChange={(event) =>
+                                  setEditVocabularyMeaning(event.target.value)
+                                }
+                                className="w-full rounded border border-gray-300 px-2 py-1"
+                              />
+                            ) : (
+                              v.meaning
+                            )}
+                          </td>
                           <td className="px-4 py-2">{v.unit_title}</td>
-                          <td className="px-4 py-2 text-right">
-                            <button
-                              onClick={async () => {
-                                await supabase
-                                  .from("vocabulary")
-                                  .delete()
-                                  .eq("id", v.id);
-                                setVocabulary(
-                                  vocabulary.filter((x) => x.id !== v.id),
-                                );
-                              }}
-                              className="text-red-500 hover:text-red-700"
-                            >
-                              <X size={16} />
-                            </button>
+                          <td className="relative px-4 py-2 text-right">
+                            {editingVocabulary?.id === v.id ? (
+                              <div className="flex justify-end gap-2">
+                                <button
+                                  onClick={saveVocabularyEdit}
+                                  className="rounded bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-700"
+                                >
+                                  保存
+                                </button>
+                                <button
+                                  onClick={cancelVocabularyEdit}
+                                  className="rounded border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50"
+                                >
+                                  キャンセル
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setVocabularyMenuId(
+                                    vocabularyMenuId === v.id ? null : v.id,
+                                  );
+                                }}
+                                className="p-1 text-gray-500 hover:text-gray-800"
+                                aria-label={`${v.word}のメニュー`}
+                              >
+                                <MoreVertical size={18} />
+                              </button>
+                            )}
+
+                            {vocabularyMenuId === v.id && (
+                              <div
+                                className="absolute right-3 top-full z-20 w-28 rounded-md border border-gray-200 bg-white py-1 text-left shadow-lg"
+                                onClick={(event) => event.stopPropagation()}
+                              >
+                                <button
+                                  onClick={() => startVocabularyEdit(v)}
+                                  className="block w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                                >
+                                  編集
+                                </button>
+                                <button
+                                  onClick={() => void deleteVocabulary(v)}
+                                  className="block w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                                >
+                                  削除
+                                </button>
+                              </div>
+                            )}
                           </td>
                         </tr>
                       ))}
