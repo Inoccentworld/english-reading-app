@@ -4,6 +4,7 @@ import {
   GEMINI_UNIT_PHONETIC_PROMPT,
   GEMINI_UNIT_TRANSLATION_PROMPT,
 } from "@/lib/geminiUnitGenerationPrompt";
+import { getSpokenSegments } from "@/lib/pronunciationSegments";
 
 type GenerationMode = "translation" | "phonetic";
 
@@ -95,7 +96,14 @@ export async function POST(request: Request) {
       additionalProperties: false,
     };
 
-    const passage = JSON.stringify({ lines: nonEmptyLines });
+    const passage = JSON.stringify({
+      lines: nonEmptyLines.map((line) => ({
+        original: line,
+        ...(mode === "phonetic"
+          ? { segments: getSpokenSegments(line).map((segment) => segment.text) }
+          : {}),
+      })),
+    });
     const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
       model: "gemini-3.6-flash",
@@ -137,10 +145,7 @@ export async function POST(request: Request) {
           return sentence?.translation?.trim() ?? "";
         }
 
-        const isChineseLine = /[\u3400-\u9fff]/u.test(line);
-        const expectedTokens = isChineseLine
-          ? [line.trim()]
-          : line.trim().split(/\s+/);
+        const expectedTokens = getSpokenSegments(line);
         const generatedTokens = sentence?.tokens;
         if (generatedTokens?.length !== expectedTokens.length) {
           throw new Error("Generated phonetic tokens do not match the source");

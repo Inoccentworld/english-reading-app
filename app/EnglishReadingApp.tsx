@@ -15,6 +15,7 @@ import {
   Save,
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
+import { segmentPronunciationLine } from "@/lib/pronunciationSegments";
 
 // === 型定義 ==============================
 type FolderType = {
@@ -420,6 +421,18 @@ export default function EnglishReadingApp() {
     setAiQuestion("");
     setAiMessages(messages);
     await requestAiExplanation(messages);
+  };
+
+  const startAiExplanation = () => {
+    const subject = selectedText.trim();
+    const lineId = selectedLineId;
+    if (!subject || lineId === null) return;
+
+    setHasStartedAi(true);
+    setAiSubject(subject);
+    setAiLineId(lineId);
+    setAiMessages([]);
+    void requestAiExplanation([], subject, lineId);
   };
 
   const handleAiResponseSelection = () => {
@@ -1138,6 +1151,16 @@ export default function EnglishReadingApp() {
                 const phoneticWords = line.phonetic.includes("|")
                   ? line.phonetic.split(/\s*\|\s*/)
                   : line.phonetic.trim().split(/\s+/);
+                const pronunciationSegments = segmentPronunciationLine(
+                  line.english,
+                );
+                const nonWhitespaceSegments = pronunciationSegments.filter(
+                  (segment) => !segment.isWhitespace,
+                );
+                const canAlignSegments =
+                  line.showPhonetic &&
+                  line.phonetic.includes("|") &&
+                  phoneticWords.length === nonWhitespaceSegments.length;
                 const canAlignPhonetic =
                   line.showPhonetic &&
                   line.phonetic &&
@@ -1172,12 +1195,50 @@ export default function EnglishReadingApp() {
                       className="select-text cursor-text"
                       onMouseUp={() => handleTextSelection(line.id)}
                     >
-                      {line.showPhonetic && line.phonetic && !canAlignPhonetic && (
+                      {line.showPhonetic &&
+                        line.phonetic &&
+                        !canAlignSegments &&
+                        !canAlignPhonetic && (
                         <div className="mb-1 text-sm leading-snug text-gray-500">
                           {line.phonetic}
                         </div>
                       )}
-                      {canAlignPhonetic ? (
+                      {canAlignSegments ? (
+                        <div className="pt-1 text-lg leading-tight">
+                          {(() => {
+                            let phoneticIndex = 0;
+                            return pronunciationSegments.map(
+                              (segment, index) => {
+                                if (segment.isWhitespace) {
+                                  return (
+                                    <span key={`${line.id}-space-${index}`}>
+                                      {segment.text}
+                                    </span>
+                                  );
+                                }
+
+                                const phonetic =
+                                  phoneticWords[phoneticIndex++] ?? "";
+                                return phonetic ? (
+                                  <ruby
+                                    key={`${line.id}-segment-${index}`}
+                                    className="leading-tight"
+                                  >
+                                    {segment.text}
+                                    <rt className="text-sm font-normal leading-none text-gray-500">
+                                      {phonetic}
+                                    </rt>
+                                  </ruby>
+                                ) : (
+                                  <span key={`${line.id}-segment-${index}`}>
+                                    {segment.text}
+                                  </span>
+                                );
+                              },
+                            );
+                          })()}
+                        </div>
+                      ) : canAlignPhonetic ? (
                         <div className="flex flex-wrap items-end gap-x-2 gap-y-0.5 pt-1 text-lg leading-tight">
                           {englishWords.map((word, index) => (
                             <ruby
@@ -1218,8 +1279,8 @@ export default function EnglishReadingApp() {
             >
               <div className="max-w-4xl mx-auto">
                 {isSelectionPanelOpen && (
-                  <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded mb-3">
-                    <h3 className="font-semibold text-gray-800 mb-2">
+                  <div className="relative mb-3 rounded border-l-4 border-yellow-400 bg-yellow-50 p-4 pr-14">
+                    <h3 className="mb-2 font-semibold text-gray-800">
                       {selectedText
                         ? `「${selectedText}」を選択中`
                         : "単語・表現を選択してください"}
@@ -1236,17 +1297,11 @@ export default function EnglishReadingApp() {
                           単語帳に追加
                         </button>
                       )}
-                      {selectedText && !hasStartedAi && (
+                      {selectedText &&
+                        !showVocabularyForm &&
+                        !hasStartedAi && (
                         <button
-                          onClick={() => {
-                            const subject = selectedText.trim();
-                            const lineId = selectedLineId;
-                            setHasStartedAi(true);
-                            setAiSubject(subject);
-                            setAiLineId(lineId);
-                            setAiMessages([]);
-                            void requestAiExplanation([], subject, lineId);
-                          }}
+                          onClick={startAiExplanation}
                           disabled={
                             isAiLoading ||
                             selectedLineId === null ||
@@ -1266,7 +1321,8 @@ export default function EnglishReadingApp() {
                           再試行
                         </button>
                       )}
-                      <button
+                    </div>
+                    <button
                         onClick={() => {
                           setSelectedText("");
                           setIsSelectionPanelOpen(false);
@@ -1282,12 +1338,11 @@ export default function EnglishReadingApp() {
                           setAiQuestion("");
                           setAiError("");
                         }}
-                        className="text-sm text-gray-600 hover:text-gray-800 px-3 py-2 border border-gray-300 rounded"
+                        className="absolute right-3 top-3 rounded border border-gray-300 bg-white/80 p-2 text-gray-600 hover:bg-white hover:text-gray-800"
                         aria-label="選択を閉じる"
                       >
                         <X size={16} />
-                      </button>
-                    </div>
+                    </button>
 
                     {showVocabularyForm && (
                       <div className="mt-3 rounded border border-yellow-200 bg-white/70 p-3">
@@ -1375,6 +1430,19 @@ export default function EnglishReadingApp() {
                             ? "単語帳に登録"
                             : "次へ（意味を選択）"}
                         </button>
+                        {!hasStartedAi && (
+                          <button
+                            onClick={startAiExplanation}
+                            disabled={
+                              isAiLoading ||
+                              selectedLineId === null ||
+                              !selectedText.trim()
+                            }
+                            className="mt-2 block bg-purple-600 text-white px-4 py-2 rounded text-sm hover:bg-purple-700 disabled:bg-gray-400"
+                          >
+                            AI解説
+                          </button>
+                        )}
                       </div>
                     )}
 
