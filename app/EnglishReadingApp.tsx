@@ -80,6 +80,7 @@ export default function EnglishReadingApp() {
   const [flashcardShowWord, setFlashcardShowWord] = useState(true);
   // 単語追加用
   const [selectedText, setSelectedText] = useState("");
+  const [isSelectionPanelOpen, setIsSelectionPanelOpen] = useState(false);
   const [newVocabularyWord, setNewVocabularyWord] = useState("");
   const [selectedMeaning, setSelectedMeaning] = useState("");
   const [selectedLineId, setSelectedLineId] = useState<number | null>(null);
@@ -110,6 +111,9 @@ export default function EnglishReadingApp() {
   const [editUnitJapanese, setEditUnitJapanese] = useState("");
   const [editUnitPhonetic, setEditUnitPhonetic] = useState("");
   const [editUnitFolder, setEditUnitFolder] = useState("");
+  const [generatingUnitField, setGeneratingUnitField] = useState<
+    "translation" | "phonetic" | null
+  >(null);
 
   const hasUnitUnsavedChanges = Boolean(
     editingUnit &&
@@ -276,6 +280,42 @@ export default function EnglishReadingApp() {
     }));
   };
 
+  const generateUnitField = async (
+    mode: "translation" | "phonetic",
+    source: string,
+    currentValue: string,
+    setValue: (value: string) => void,
+  ) => {
+    if (!source.trim()) {
+      alert("先に原文を入力してください");
+      return;
+    }
+    if (
+      currentValue.trim() &&
+      !confirm("現在の内容をAIの生成結果で上書きしますか？")
+    ) {
+      return;
+    }
+
+    setGeneratingUnitField(mode);
+    try {
+      const response = await fetch("/api/generate-unit-text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source, mode }),
+      });
+      const data = (await response.json()) as { text?: string; error?: string };
+      if (!response.ok || !data.text) {
+        throw new Error(data.error || "AIから生成結果を取得できませんでした");
+      }
+      setValue(data.text);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "AIによる生成に失敗しました");
+    } finally {
+      setGeneratingUnitField(null);
+    }
+  };
+
   const addUnit = async () => {
     const parsed = parseMultilineInput(
       newUnitEnglish,
@@ -320,6 +360,7 @@ export default function EnglishReadingApp() {
         setSelectedMeaning(text);
       } else {
         setSelectedText(text);
+        setIsSelectionPanelOpen(true);
         setSelectedLineId(lineId);
         if (showVocabularyForm) setNewVocabularyWord(text);
       }
@@ -393,6 +434,7 @@ export default function EnglishReadingApp() {
       return;
     }
     setSelectedText(text);
+    setIsSelectionPanelOpen(true);
   };
 
   const getFilteredUnits = () =>
@@ -869,6 +911,25 @@ export default function EnglishReadingApp() {
                     onChange={(e) => setNewUnitJapanese(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
                   />
+                  <div className="mt-2 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        generateUnitField(
+                          "translation",
+                          newUnitEnglish,
+                          newUnitJapanese,
+                          setNewUnitJapanese,
+                        )
+                      }
+                      disabled={generatingUnitField !== null}
+                      className="rounded-lg border border-blue-600 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {generatingUnitField === "translation"
+                        ? "生成中..."
+                        : "AIで生成"}
+                    </button>
+                  </div>
                 </div>
 
                 <div>
@@ -880,6 +941,25 @@ export default function EnglishReadingApp() {
                     onChange={(e) => setNewUnitPhonetic(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
                   />
+                  <div className="mt-2 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        generateUnitField(
+                          "phonetic",
+                          newUnitEnglish,
+                          newUnitPhonetic,
+                          setNewUnitPhonetic,
+                        )
+                      }
+                      disabled={generatingUnitField !== null}
+                      className="rounded-lg border border-blue-600 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {generatingUnitField === "phonetic"
+                        ? "生成中..."
+                        : "AIで生成"}
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -957,6 +1037,25 @@ export default function EnglishReadingApp() {
                     onChange={(e) => setEditUnitJapanese(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
                   />
+                  <div className="mt-2 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        generateUnitField(
+                          "translation",
+                          editUnitEnglish,
+                          editUnitJapanese,
+                          setEditUnitJapanese,
+                        )
+                      }
+                      disabled={generatingUnitField !== null}
+                      className="rounded-lg border border-blue-600 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {generatingUnitField === "translation"
+                        ? "生成中..."
+                        : "AIで生成"}
+                    </button>
+                  </div>
                 </div>
 
                 <div>
@@ -968,6 +1067,25 @@ export default function EnglishReadingApp() {
                     onChange={(e) => setEditUnitPhonetic(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
                   />
+                  <div className="mt-2 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        generateUnitField(
+                          "phonetic",
+                          editUnitEnglish,
+                          editUnitPhonetic,
+                          setEditUnitPhonetic,
+                        )
+                      }
+                      disabled={generatingUnitField !== null}
+                      className="rounded-lg border border-blue-600 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {generatingUnitField === "phonetic"
+                        ? "生成中..."
+                        : "AIで生成"}
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1017,7 +1135,9 @@ export default function EnglishReadingApp() {
             <div className="bg-white p-4 rounded-lg shadow-md space-y-3">
               {selectedUnit?.lines.map((line) => {
                 const englishWords = line.english.trim().split(/\s+/);
-                const phoneticWords = line.phonetic.trim().split(/\s+/);
+                const phoneticWords = line.phonetic.includes("|")
+                  ? line.phonetic.split(/\s*\|\s*/)
+                  : line.phonetic.trim().split(/\s+/);
                 const canAlignPhonetic =
                   line.showPhonetic &&
                   line.phonetic &&
@@ -1058,15 +1178,17 @@ export default function EnglishReadingApp() {
                         </div>
                       )}
                       {canAlignPhonetic ? (
-                        <div className="flex flex-wrap items-end gap-x-2 gap-y-1 text-lg leading-snug">
+                        <div className="flex flex-wrap items-end gap-x-2 gap-y-0.5 pt-1 text-lg leading-tight">
                           {englishWords.map((word, index) => (
-                            <span
+                            <ruby
                               key={`${line.id}-${index}`}
-                              data-phonetic={phoneticWords[index]}
-                              className="inline-flex flex-col items-center before:content-[attr(data-phonetic)] before:text-sm before:font-normal before:leading-snug before:text-gray-500"
+                              className="leading-tight"
                             >
                               {word}
-                            </span>
+                              <rt className="text-sm font-normal leading-none text-gray-500">
+                                {phoneticWords[index]}
+                              </rt>
+                            </ruby>
                           ))}
                         </div>
                       ) : (
@@ -1089,19 +1211,21 @@ export default function EnglishReadingApp() {
 
             <div
               className={
-                selectedText
+                isSelectionPanelOpen
                   ? "fixed bottom-0 left-0 right-0 bg-white border-t-2 border-gray-300 shadow-lg p-4 pr-24"
                   : "contents"
               }
             >
               <div className="max-w-4xl mx-auto">
-                {selectedText && (
+                {isSelectionPanelOpen && (
                   <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded mb-3">
                     <h3 className="font-semibold text-gray-800 mb-2">
-                      選択: {selectedText}
+                      {selectedText
+                        ? `「${selectedText}」を選択中`
+                        : "単語・表現を選択してください"}
                     </h3>
                     <div className="flex flex-wrap gap-2">
-                      {!showVocabularyForm && (
+                      {selectedText && !showVocabularyForm && (
                         <button
                           onClick={() => {
                             setNewVocabularyWord(selectedText);
@@ -1112,7 +1236,7 @@ export default function EnglishReadingApp() {
                           単語帳に追加
                         </button>
                       )}
-                      {!hasStartedAi && (
+                      {selectedText && !hasStartedAi && (
                         <button
                           onClick={() => {
                             const subject = selectedText.trim();
@@ -1145,6 +1269,7 @@ export default function EnglishReadingApp() {
                       <button
                         onClick={() => {
                           setSelectedText("");
+                          setIsSelectionPanelOpen(false);
                           setNewVocabularyWord("");
                           setSelectedMeaning("");
                           setIsSelectingMeaning(false);
@@ -1236,6 +1361,8 @@ export default function EnglishReadingApp() {
                             setSelectedMeaning("");
                             setIsSelectingMeaning(false);
                             setShowVocabularyForm(false);
+                            setSelectedText("");
+                            setSelectedLineId(null);
                           }}
                           disabled={
                             isSelectingMeaning &&
