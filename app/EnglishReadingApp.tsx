@@ -92,6 +92,7 @@ export default function EnglishReadingApp() {
   const [aiLineId, setAiLineId] = useState<number | null>(null);
   const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
   const [aiQuestion, setAiQuestion] = useState("");
+  const [showAiQuestionInput, setShowAiQuestionInput] = useState(false);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
   const [showToast, setShowToast] = useState(false);
@@ -419,6 +420,7 @@ export default function EnglishReadingApp() {
     if (!question || isAiLoading) return;
     const messages = [...aiMessages, { role: "user" as const, text: question }];
     setAiQuestion("");
+    setShowAiQuestionInput(false);
     setAiMessages(messages);
     await requestAiExplanation(messages);
   };
@@ -429,6 +431,7 @@ export default function EnglishReadingApp() {
     if (!subject || lineId === null) return;
 
     setHasStartedAi(true);
+    setShowAiQuestionInput(false);
     setAiSubject(subject);
     setAiLineId(lineId);
     setAiMessages([]);
@@ -620,7 +623,13 @@ export default function EnglishReadingApp() {
   // === ここからUI部分 ===
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
-      <div className="max-w-7xl mx-auto">
+      <div
+        className={
+          currentView === "reader" && hasStartedAi
+            ? "mx-auto max-w-none"
+            : "mx-auto max-w-7xl"
+        }
+      >
         <div className="flex justify-between items-center mb-8">
           <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-3">
             <BookOpen size={36} className="text-blue-600" />
@@ -1144,7 +1153,13 @@ export default function EnglishReadingApp() {
 
         {/* === リーダー画面 === */}
         {currentView === "reader" && (
-          <div className="max-w-4xl mx-auto pb-20">
+          <div
+            className={`max-w-4xl pb-20 transition-[margin] ${
+              hasStartedAi
+                ? "mx-auto lg:ml-auto lg:mr-[46vw] lg:max-w-4xl lg:pr-4 xl:mr-[42vw]"
+                : "mx-auto"
+            }`}
+          >
             <div className="bg-white p-4 rounded-lg shadow-md space-y-3">
               {selectedUnit?.lines.map((line) => {
                 const englishWords = line.english.trim().split(/\s+/);
@@ -1273,26 +1288,40 @@ export default function EnglishReadingApp() {
             <div
               className={
                 isSelectionPanelOpen
-                  ? "fixed bottom-0 left-0 right-0 bg-white border-t-2 border-gray-300 shadow-lg p-4 pr-24"
+                  ? `fixed bottom-0 left-0 right-0 z-40 border-t-2 border-gray-300 bg-white p-4 pr-24 shadow-lg ${
+                      hasStartedAi
+                        ? "lg:bottom-auto lg:left-auto lg:right-0 lg:top-0 lg:h-screen lg:w-[46vw] lg:overflow-hidden lg:border-l-2 lg:border-t-0 lg:p-3 xl:w-[42vw]"
+                        : ""
+                    }`
                   : "contents"
               }
             >
-              <div className="max-w-4xl mx-auto">
+              <div
+                className={`mx-auto max-w-4xl ${
+                  hasStartedAi ? "lg:h-full" : ""
+                }`}
+              >
                 {isSelectionPanelOpen && (
-                  <div className="relative mb-3 rounded border-l-4 border-yellow-400 bg-yellow-50 p-4 pr-14">
-                    <h3 className="mb-2 font-semibold text-gray-800">
-                      {selectedText
-                        ? `「${selectedText}」を選択中`
-                        : "単語・表現を選択してください"}
-                    </h3>
-                    <div className="flex flex-wrap gap-2">
+                  <div
+                    className={`relative mb-2 rounded border-l-4 border-yellow-400 bg-yellow-50 p-3 pr-12 ${
+                      hasStartedAi
+                        ? "lg:mb-0 lg:flex lg:h-full lg:flex-col lg:overflow-hidden"
+                        : ""
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center gap-2 pr-8">
+                      <h3 className="text-sm font-semibold text-gray-800">
+                        {selectedText
+                          ? `「${selectedText}」を選択中`
+                          : "単語・表現を選択してください"}
+                      </h3>
                       {selectedText && !showVocabularyForm && (
                         <button
                           onClick={() => {
                             setNewVocabularyWord(selectedText);
                             setShowVocabularyForm(true);
                           }}
-                          className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700"
+                          className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-700"
                         >
                           単語帳に追加
                         </button>
@@ -1307,7 +1336,7 @@ export default function EnglishReadingApp() {
                             selectedLineId === null ||
                             !selectedText.trim()
                           }
-                          className="bg-purple-600 text-white px-4 py-2 rounded text-sm hover:bg-purple-700 disabled:bg-gray-400"
+                          className="rounded bg-purple-600 px-3 py-1.5 text-xs text-white hover:bg-purple-700 disabled:bg-gray-400"
                         >
                           AI解説
                         </button>
@@ -1316,7 +1345,7 @@ export default function EnglishReadingApp() {
                         <button
                           onClick={() => void requestAiExplanation([])}
                           disabled={isAiLoading}
-                          className="bg-purple-600 text-white px-4 py-2 rounded text-sm hover:bg-purple-700 disabled:bg-gray-400"
+                          className="rounded bg-purple-600 px-3 py-1.5 text-xs text-white hover:bg-purple-700 disabled:bg-gray-400"
                         >
                           再試行
                         </button>
@@ -1336,46 +1365,43 @@ export default function EnglishReadingApp() {
                           setAiLineId(null);
                           setAiMessages([]);
                           setAiQuestion("");
+                          setShowAiQuestionInput(false);
                           setAiError("");
                         }}
-                        className="absolute right-3 top-3 rounded border border-gray-300 bg-white/80 p-2 text-gray-600 hover:bg-white hover:text-gray-800"
+                        className="absolute right-2 top-2 rounded border border-gray-300 bg-white/80 p-1.5 text-gray-600 hover:bg-white hover:text-gray-800"
                         aria-label="選択を閉じる"
                       >
                         <X size={16} />
                     </button>
 
                     {showVocabularyForm && (
-                      <div className="mt-3 rounded border border-yellow-200 bg-white/70 p-3">
-                        <label className="block text-sm text-gray-700 mb-2">
-                          <span className="block font-medium mb-1">見出し語</span>
+                      <div className="mt-2 rounded border border-yellow-200 bg-white/70 p-2">
+                        <label className="mb-2 flex items-center gap-2 text-sm text-gray-700">
+                          <span className="w-16 shrink-0 font-medium">見出し語</span>
                           <input
                             type="text"
                             value={newVocabularyWord}
                             onChange={(event) =>
                               setNewVocabularyWord(event.target.value)
                             }
-                            className="w-full rounded border border-yellow-300 bg-white px-3 py-2"
+                            className="min-w-0 flex-1 rounded border border-yellow-300 bg-white px-2 py-1.5"
                           />
                         </label>
                         {isSelectingMeaning && (
-                          <label className="block text-sm text-gray-700 mb-2">
-                            <span className="block font-medium mb-1">意味</span>
+                          <label className="mb-2 flex items-center gap-2 text-sm text-gray-700">
+                            <span className="w-16 shrink-0 font-medium">意味</span>
                             <input
                               type="text"
                               value={selectedMeaning}
                               onChange={(event) =>
                                 setSelectedMeaning(event.target.value)
                               }
-                              className="w-full rounded border border-blue-300 bg-white px-3 py-2"
+                              className="min-w-0 flex-1 rounded border border-blue-300 bg-white px-2 py-1.5"
                               placeholder="和訳を選択するか入力してください"
                             />
                           </label>
                         )}
-                        {!isSelectingMeaning && (
-                          <p className="text-sm text-gray-600 mb-3">
-                            意味となる日本語を次に選択してください
-                          </p>
-                        )}
+                        <div className="flex flex-wrap gap-2 pl-[4.5rem]">
                         <button
                           onClick={async () => {
                             if (!isSelectingMeaning) {
@@ -1424,7 +1450,7 @@ export default function EnglishReadingApp() {
                             (!newVocabularyWord.trim() ||
                               !selectedMeaning.trim())
                           }
-                          className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 disabled:bg-gray-400"
+                          className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-700 disabled:bg-gray-400"
                         >
                           {isSelectingMeaning
                             ? "単語帳に登録"
@@ -1438,16 +1464,17 @@ export default function EnglishReadingApp() {
                               selectedLineId === null ||
                               !selectedText.trim()
                             }
-                            className="mt-2 block bg-purple-600 text-white px-4 py-2 rounded text-sm hover:bg-purple-700 disabled:bg-gray-400"
+                            className="rounded bg-purple-600 px-3 py-1.5 text-xs text-white hover:bg-purple-700 disabled:bg-gray-400"
                           >
                             AI解説
                           </button>
                         )}
+                        </div>
                       </div>
                     )}
 
                     {aiError && (
-                      <div className="mt-3 rounded bg-red-50 p-3 text-sm text-red-700">
+                      <div className="mt-2 rounded bg-red-50 p-2 text-sm text-red-700">
                         {aiError}
                       </div>
                     )}
@@ -1455,17 +1482,19 @@ export default function EnglishReadingApp() {
                     {hasStartedAi &&
                       isAiLoading &&
                       aiMessages.length === 0 && (
-                        <p className="mt-3 text-sm text-purple-700">解説中...</p>
+                        <p className="mt-2 text-sm text-purple-700">解説中...</p>
                       )}
 
                     {aiMessages.length > 0 && (
-                      <div className="mt-4 space-y-3 border-t border-yellow-200 pt-4">
-                        <h4 className="font-semibold text-gray-800">AI解説</h4>
-                        <div className="max-h-[32vh] space-y-3 overflow-y-auto pr-1 md:max-h-[40vh]">
+                      <div className="relative mt-2 space-y-2 border-t border-yellow-200 pt-2 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
+                        <h4 className="text-sm font-semibold text-gray-800">
+                          AI解説
+                        </h4>
+                        <div className="max-h-[32vh] space-y-2 overflow-y-auto pb-10 pr-1 md:max-h-[40vh] lg:min-h-0 lg:max-h-none lg:flex-1">
                           {aiMessages.map((message, index) => (
                           <div
                             key={`${message.role}-${index}`}
-                            className={`rounded p-3 text-sm leading-relaxed ${
+                            className={`rounded p-2 text-sm leading-relaxed ${
                               message.role === "user"
                                 ? "ml-8 whitespace-pre-wrap bg-gray-100 text-gray-700"
                                 : "bg-purple-50 text-gray-800 select-text"
@@ -1532,7 +1561,13 @@ export default function EnglishReadingApp() {
                           )}
                         </div>
 
-                        <div className="flex gap-2">
+                        <div
+                          className={
+                            showAiQuestionInput
+                              ? "absolute bottom-2 left-2 right-2 z-10 flex gap-2 rounded-lg border border-purple-200 bg-white p-2 shadow-lg"
+                              : "hidden"
+                          }
+                        >
                           <input
                             type="text"
                             value={aiQuestion}
@@ -1556,13 +1591,27 @@ export default function EnglishReadingApp() {
                             質問
                           </button>
                         </div>
+                        {!showAiQuestionInput && (
+                          <button
+                            onClick={() => setShowAiQuestionInput(true)}
+                            className="absolute bottom-2 right-2 z-10 rounded-full border border-purple-300 bg-white/95 px-3 py-1.5 text-xs text-purple-700 shadow hover:bg-purple-50"
+                          >
+                            さらに質問
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
                 )}
               </div>
               {/* === 訳・発音の表示切り替えボタン === */}
-              <div className="fixed right-3 bottom-3 z-50 flex flex-col gap-2">
+              <div
+                className={`fixed bottom-3 z-50 flex flex-col gap-2 transition-[right] ${
+                  hasStartedAi
+                    ? "right-3 lg:right-[calc(46vw+0.75rem)] xl:right-[calc(42vw+0.75rem)]"
+                    : "right-3"
+                }`}
+              >
                 <button
                   onClick={() => {
                     if (!selectedUnit) return;
