@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   BookOpen,
@@ -53,6 +53,15 @@ type AiMessage = {
   text: string;
 };
 
+type AiChatSession = {
+  id: string;
+  subject: string;
+  lineId: number;
+  messages: AiMessage[];
+  isLoading: boolean;
+  error: string;
+};
+
 // === メインコンポーネント ==============================
 export default function EnglishReadingApp() {
   const [folders, setFolders] = useState<FolderType[]>([]);
@@ -87,14 +96,10 @@ export default function EnglishReadingApp() {
   const [selectedLineId, setSelectedLineId] = useState<number | null>(null);
   const [isSelectingMeaning, setIsSelectingMeaning] = useState(false);
   const [showVocabularyForm, setShowVocabularyForm] = useState(false);
-  const [hasStartedAi, setHasStartedAi] = useState(false);
-  const [aiSubject, setAiSubject] = useState("");
-  const [aiLineId, setAiLineId] = useState<number | null>(null);
-  const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
+  const [aiChats, setAiChats] = useState<AiChatSession[]>([]);
+  const [expandedAiChatId, setExpandedAiChatId] = useState<string | null>(null);
   const [aiQuestion, setAiQuestion] = useState("");
   const [showAiQuestionInput, setShowAiQuestionInput] = useState(false);
-  const [isAiLoading, setIsAiLoading] = useState(false);
-  const [aiError, setAiError] = useState("");
   const [showToast, setShowToast] = useState(false);
   const [showAllJapanese, setShowAllJapanese] = useState(false);
   const [showAllPhonetic, setShowAllPhonetic] = useState(false);
@@ -116,6 +121,17 @@ export default function EnglishReadingApp() {
   const [generatingUnitField, setGeneratingUnitField] = useState<
     "translation" | "phonetic" | null
   >(null);
+  const hasStartedAi = aiChats.length > 0;
+  const isAiLoading = aiChats.some((chat) => chat.isLoading);
+  const activeAiChat =
+    aiChats.find((chat) => chat.id === expandedAiChatId) ?? null;
+  const aiMessages = activeAiChat?.messages ?? [];
+  const aiError = activeAiChat?.error ?? "";
+  const readingScrollAnchorRef = useRef<{
+    element: HTMLElement;
+    top: number;
+  } | null>(null);
+  const aiChatHeadersRef = useRef<HTMLDivElement>(null);
 
   const hasUnitUnsavedChanges = Boolean(
     editingUnit &&
@@ -133,6 +149,43 @@ export default function EnglishReadingApp() {
       (editVocabularyWord !== editingVocabulary.word ||
         editVocabularyMeaning !== editingVocabulary.meaning),
   );
+
+  const captureReadingScrollAnchor = () => {
+    const visibleLine = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-reader-line-id]"),
+    ).find((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.bottom > 0 && rect.top < window.innerHeight;
+    });
+
+    if (visibleLine) {
+      readingScrollAnchorRef.current = {
+        element: visibleLine,
+        top: visibleLine.getBoundingClientRect().top,
+      };
+    }
+  };
+
+  useLayoutEffect(() => {
+    const anchor = readingScrollAnchorRef.current;
+    if (!anchor) return;
+    readingScrollAnchorRef.current = null;
+    if (!anchor.element.isConnected) return;
+
+    const topDifference = anchor.element.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(topDifference) > 0.5) {
+      window.scrollBy(0, topDifference);
+    }
+  }, [hasStartedAi]);
+
+  useEffect(() => {
+    const container = aiChatHeadersRef.current;
+    if (!container) return;
+    const frame = window.requestAnimationFrame(() => {
+      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [aiChats.length]);
 
   // === 初期ロード ===
   const loadAll = async () => {
@@ -370,11 +423,12 @@ export default function EnglishReadingApp() {
   };
 
   const requestAiExplanation = async (
+    chatId: string,
     messages: AiMessage[],
-    subject = aiSubject,
-    lineId = aiLineId,
+    subject: string,
+    lineId: number,
   ) => {
-    if (!selectedUnit || lineId === null || !subject.trim()) return;
+    if (!selectedUnit || !subject.trim()) return;
     const lineIndex = selectedUnit.lines.findIndex(
       (line) => line.id === lineId,
     );
@@ -385,8 +439,11 @@ export default function EnglishReadingApp() {
             .join("\n")
         : "";
 
-    setIsAiLoading(true);
-    setAiError("");
+    setAiChats((current) =>
+      current.map((chat) =>
+        chat.id === chatId ? { ...chat, isLoading: true, error: "" } : chat,
+      ),
+    );
     try {
       const response = await fetch("/api/explain", {
         method: "POST",
@@ -405,24 +462,44 @@ export default function EnglishReadingApp() {
       if (!response.ok || !result.text) {
         throw new Error(result.error || "AI解説を取得できませんでした");
       }
-      setAiMessages([...messages, { role: "model", text: result.text }]);
-    } catch (error) {
-      setAiError(
-        error instanceof Error ? error.message : "AI解説を取得できませんでした",
+      const responseText = result.text;
+      setAiChats((current) =>
+        current.map((chat) =>
+          chat.id === chatId
+            ? {
+                ...chat,
+                messages: [...messages, { role: "model", text: responseText }],
+                isLoading: false,
+              }
+            : chat,
+        ),
       );
-    } finally {
-      setIsAiLoading(false);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "AI解説を取得できませんでした";
+      setAiChats((current) =>
+        current.map((chat) =>
+          chat.id === chatId
+            ? { ...chat, isLoading: false, error: errorMessage }
+            : chat,
+        ),
+      );
     }
   };
 
-  const askAiFollowUp = async () => {
+  const askAiFollowUp = async (chatId: string) => {
     const question = aiQuestion.trim();
-    if (!question || isAiLoading) return;
-    const messages = [...aiMessages, { role: "user" as const, text: question }];
+    const chat = aiChats.find((item) => item.id === chatId);
+    if (!question || !chat || chat.isLoading) return;
+    const messages = [...chat.messages, { role: "user" as const, text: question }];
     setAiQuestion("");
     setShowAiQuestionInput(false);
-    setAiMessages(messages);
-    await requestAiExplanation(messages);
+    setAiChats((current) =>
+      current.map((item) =>
+        item.id === chatId ? { ...item, messages } : item,
+      ),
+    );
+    await requestAiExplanation(chatId, messages, chat.subject, chat.lineId);
   };
 
   const startAiExplanation = () => {
@@ -430,15 +507,26 @@ export default function EnglishReadingApp() {
     const lineId = selectedLineId;
     if (!subject || lineId === null) return;
 
-    setHasStartedAi(true);
+    if (!hasStartedAi) captureReadingScrollAnchor();
+    const chatId = crypto.randomUUID();
+    setAiChats((current) => [
+      ...current,
+      {
+        id: chatId,
+        subject,
+        lineId,
+        messages: [],
+        isLoading: true,
+        error: "",
+      },
+    ]);
+    setExpandedAiChatId(chatId);
     setShowAiQuestionInput(false);
-    setAiSubject(subject);
-    setAiLineId(lineId);
-    setAiMessages([]);
-    void requestAiExplanation([], subject, lineId);
+    setAiQuestion("");
+    void requestAiExplanation(chatId, [], subject, lineId);
   };
 
-  const handleAiResponseSelection = () => {
+  const handleAiResponseSelection = (lineId?: number) => {
     const text = window.getSelection()?.toString().trim();
     if (!text) return;
     if (showVocabularyForm && isSelectingMeaning) {
@@ -450,6 +538,7 @@ export default function EnglishReadingApp() {
       return;
     }
     setSelectedText(text);
+    if (lineId !== undefined) setSelectedLineId(lineId);
     setIsSelectionPanelOpen(true);
   };
 
@@ -1154,7 +1243,7 @@ export default function EnglishReadingApp() {
         {/* === リーダー画面 === */}
         {currentView === "reader" && (
           <div
-            className={`max-w-4xl pb-20 transition-[margin] ${
+            className={`max-w-4xl pb-20 ${
               hasStartedAi
                 ? "mx-auto lg:ml-auto lg:mr-[46vw] lg:max-w-4xl lg:pr-4 xl:mr-[42vw]"
                 : "mx-auto"
@@ -1184,6 +1273,7 @@ export default function EnglishReadingApp() {
                 return (
                   <div
                     key={line.id}
+                    data-reader-line-id={line.id}
                     className="border-b border-gray-200 pb-3 last:border-0"
                     onClick={() => {
                       if (window.getSelection()?.toString().trim()) return;
@@ -1326,9 +1416,7 @@ export default function EnglishReadingApp() {
                           単語帳に追加
                         </button>
                       )}
-                      {selectedText &&
-                        !showVocabularyForm &&
-                        !hasStartedAi && (
+                      {selectedText && !showVocabularyForm && (
                         <button
                           onClick={startAiExplanation}
                           disabled={
@@ -1341,18 +1429,10 @@ export default function EnglishReadingApp() {
                           AI解説
                         </button>
                       )}
-                      {hasStartedAi && aiError && aiMessages.length === 0 && (
-                        <button
-                          onClick={() => void requestAiExplanation([])}
-                          disabled={isAiLoading}
-                          className="rounded bg-purple-600 px-3 py-1.5 text-xs text-white hover:bg-purple-700 disabled:bg-gray-400"
-                        >
-                          再試行
-                        </button>
-                      )}
                     </div>
                     <button
                         onClick={() => {
+                          if (hasStartedAi) captureReadingScrollAnchor();
                           setSelectedText("");
                           setIsSelectionPanelOpen(false);
                           setNewVocabularyWord("");
@@ -1360,13 +1440,10 @@ export default function EnglishReadingApp() {
                           setIsSelectingMeaning(false);
                           setSelectedLineId(null);
                           setShowVocabularyForm(false);
-                          setHasStartedAi(false);
-                          setAiSubject("");
-                          setAiLineId(null);
-                          setAiMessages([]);
+                          setAiChats([]);
+                          setExpandedAiChatId(null);
                           setAiQuestion("");
                           setShowAiQuestionInput(false);
-                          setAiError("");
                         }}
                         className="absolute right-2 top-2 rounded border border-gray-300 bg-white/80 p-1.5 text-gray-600 hover:bg-white hover:text-gray-800"
                         aria-label="選択を閉じる"
@@ -1456,7 +1533,7 @@ export default function EnglishReadingApp() {
                             ? "単語帳に登録"
                             : "次へ（意味を選択）"}
                         </button>
-                        {!hasStartedAi && (
+                        {selectedText && (
                           <button
                             onClick={startAiExplanation}
                             disabled={
@@ -1473,23 +1550,78 @@ export default function EnglishReadingApp() {
                       </div>
                     )}
 
-                    {aiError && (
-                      <div className="mt-2 rounded bg-red-50 p-2 text-sm text-red-700">
-                        {aiError}
+                    {aiChats.length > 0 && (
+                      <div
+                        ref={aiChatHeadersRef}
+                        className="mt-2 max-h-[18vh] space-y-1.5 overflow-y-auto border-t border-yellow-200 pt-2 lg:max-h-[28vh]"
+                      >
+                        {aiChats.map((chat) => {
+                          const isExpanded = expandedAiChatId === chat.id;
+                          return (
+                            <button
+                              key={chat.id}
+                              type="button"
+                              onClick={() => {
+                                setExpandedAiChatId(
+                                  isExpanded ? null : chat.id,
+                                );
+                                setAiQuestion("");
+                                setShowAiQuestionInput(false);
+                              }}
+                              className={`flex w-full items-center gap-2 rounded border px-2.5 py-2 text-left text-sm ${
+                                isExpanded
+                                  ? "border-purple-300 bg-purple-50"
+                                  : "border-gray-200 bg-white hover:bg-gray-50"
+                              }`}
+                            >
+                              <span className="text-xs text-purple-600">
+                                {isExpanded ? "▼" : "▶"}
+                              </span>
+                              <span className="min-w-0 flex-1 truncate font-medium text-gray-800">
+                                {chat.subject}
+                              </span>
+                              {chat.isLoading && (
+                                <span className="text-xs text-purple-600">
+                                  生成中...
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
 
-                    {hasStartedAi &&
-                      isAiLoading &&
+                    {aiError && (
+                      <div className="mt-2 flex items-center justify-between gap-2 rounded bg-red-50 p-2 text-sm text-red-700">
+                        <span>{aiError}</span>
+                        {activeAiChat && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void requestAiExplanation(
+                                activeAiChat.id,
+                                activeAiChat.messages,
+                                activeAiChat.subject,
+                                activeAiChat.lineId,
+                              )
+                            }
+                            disabled={activeAiChat.isLoading}
+                            className="shrink-0 rounded border border-red-300 bg-white px-2 py-1 text-xs disabled:opacity-50"
+                          >
+                            再試行
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {activeAiChat &&
+                      activeAiChat.isLoading &&
                       aiMessages.length === 0 && (
                         <p className="mt-2 text-sm text-purple-700">解説中...</p>
                       )}
 
                     {aiMessages.length > 0 && (
                       <div className="relative mt-2 space-y-2 border-t border-yellow-200 pt-2 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
-                        <h4 className="text-sm font-semibold text-gray-800">
-                          AI解説
-                        </h4>
                         <div className="max-h-[32vh] space-y-2 overflow-y-auto pb-10 pr-1 md:max-h-[40vh] lg:min-h-0 lg:max-h-none lg:flex-1">
                           {aiMessages.map((message, index) => (
                           <div
@@ -1501,7 +1633,10 @@ export default function EnglishReadingApp() {
                             }`}
                             onMouseUp={
                               message.role === "model"
-                                ? handleAiResponseSelection
+                                ? () =>
+                                    handleAiResponseSelection(
+                                      activeAiChat?.lineId,
+                                    )
                                 : undefined
                             }
                           >
@@ -1556,7 +1691,7 @@ export default function EnglishReadingApp() {
                           </div>
                           ))}
 
-                          {isAiLoading && (
+                          {activeAiChat?.isLoading && (
                             <p className="text-sm text-purple-700">回答中...</p>
                           )}
                         </div>
@@ -1577,15 +1712,22 @@ export default function EnglishReadingApp() {
                             onKeyDown={(event) => {
                               if (event.key === "Enter") {
                                 event.preventDefault();
-                                void askAiFollowUp();
+                                if (activeAiChat) {
+                                  void askAiFollowUp(activeAiChat.id);
+                                }
                               }
                             }}
                             placeholder="さらに質問する"
                             className="min-w-0 flex-1 rounded border border-gray-300 bg-white px-3 py-2 text-sm"
                           />
                           <button
-                            onClick={() => void askAiFollowUp()}
-                            disabled={!aiQuestion.trim() || isAiLoading}
+                            onClick={() =>
+                              activeAiChat &&
+                              void askAiFollowUp(activeAiChat.id)
+                            }
+                            disabled={
+                              !aiQuestion.trim() || activeAiChat?.isLoading
+                            }
                             className="rounded bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:bg-gray-400"
                           >
                             質問
