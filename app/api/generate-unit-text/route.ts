@@ -5,6 +5,10 @@ import {
   GEMINI_UNIT_TRANSLATION_PROMPT,
 } from "@/lib/geminiUnitGenerationPrompt";
 import { getSpokenSegments } from "@/lib/pronunciationSegments";
+import {
+  GEMINI_REQUEST_TIMEOUT_MS,
+  getGeminiErrorDetails,
+} from "@/lib/geminiError";
 
 type GenerationMode = "translation" | "phonetic";
 
@@ -104,7 +108,10 @@ export async function POST(request: Request) {
           : {}),
       })),
     });
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: { timeout: GEMINI_REQUEST_TIMEOUT_MS },
+    });
     const response = await ai.models.generateContent({
       model: "gemini-3.6-flash",
       contents: passage,
@@ -157,9 +164,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ text: generatedText });
   } catch (error) {
     console.error("Gemini unit text generation error", error);
+    const details = getGeminiErrorDetails(error);
     return NextResponse.json(
-      { error: "AIによる生成に失敗しました" },
-      { status: 500 },
+      { error: details.message, code: details.code },
+      { status: details.status },
     );
   }
 }

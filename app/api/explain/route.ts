@@ -1,6 +1,10 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
 import { GEMINI_EXPLANATION_PROMPT } from "@/lib/geminiExplanationPrompt";
+import {
+  GEMINI_REQUEST_TIMEOUT_MS,
+  getGeminiErrorDetails,
+} from "@/lib/geminiError";
 
 type ConversationMessage = {
   role: "user" | "model";
@@ -64,7 +68,10 @@ export async function POST(request: Request) {
       .filter(Boolean)
       .join("\n\n");
 
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: { timeout: GEMINI_REQUEST_TIMEOUT_MS },
+    });
     const response = await ai.models.generateContent({
       model: "gemini-3.6-flash",
       contents: [
@@ -90,9 +97,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ text });
   } catch (error) {
     console.error("Gemini explanation error", error);
+    const details = getGeminiErrorDetails(error);
     return NextResponse.json(
-      { error: "AI解説の取得に失敗しました" },
-      { status: 500 },
+      { error: details.message, code: details.code },
+      { status: details.status },
     );
   }
 }

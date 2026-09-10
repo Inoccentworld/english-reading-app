@@ -62,6 +62,27 @@ type AiChatSession = {
   error: string;
 };
 
+type DictionaryEntry = {
+  word: string;
+  headword: string;
+  phonetic: string;
+  definitions: {
+    partOfSpeech: string;
+    definition: string;
+  }[];
+  example: string;
+};
+
+const getAiRequestErrorMessage = (error: unknown, fallback: string) => {
+  if (error instanceof SyntaxError) {
+    return "サーバーから正しい形式の応答を取得できませんでした。再試行してください。";
+  }
+  if (error instanceof TypeError) {
+    return "サーバーに接続できませんでした。通信状況を確認して再試行してください。";
+  }
+  return error instanceof Error ? error.message : fallback;
+};
+
 // === メインコンポーネント ==============================
 export default function EnglishReadingApp() {
   const [folders, setFolders] = useState<FolderType[]>([]);
@@ -100,9 +121,15 @@ export default function EnglishReadingApp() {
   const [expandedAiChatId, setExpandedAiChatId] = useState<string | null>(null);
   const [aiQuestion, setAiQuestion] = useState("");
   const [showAiQuestionInput, setShowAiQuestionInput] = useState(false);
+  const [dictionaryEntry, setDictionaryEntry] =
+    useState<DictionaryEntry | null>(null);
+  const [dictionaryError, setDictionaryError] = useState("");
+  const [isDictionaryLoading, setIsDictionaryLoading] = useState(false);
   const [showToast, setShowToast] = useState(false);
   const [showAllJapanese, setShowAllJapanese] = useState(false);
   const [showAllPhonetic, setShowAllPhonetic] = useState(false);
+  const [showVocabularyQuickView, setShowVocabularyQuickView] = useState(false);
+  const [quickVocabularySearch, setQuickVocabularySearch] = useState("");
   const [vocabFolder, setVocabFolder] = useState("");
   const [vocabUnit, setVocabUnit] = useState("");
   const [vocabularyMenuId, setVocabularyMenuId] = useState<string | null>(null);
@@ -122,6 +149,7 @@ export default function EnglishReadingApp() {
     "translation" | "phonetic" | null
   >(null);
   const hasStartedAi = aiChats.length > 0;
+  const hasReaderSidePanel = hasStartedAi || showVocabularyQuickView;
   const isAiLoading = aiChats.some((chat) => chat.isLoading);
   const activeAiChat =
     aiChats.find((chat) => chat.id === expandedAiChatId) ?? null;
@@ -132,6 +160,7 @@ export default function EnglishReadingApp() {
     top: number;
   } | null>(null);
   const aiChatHeadersRef = useRef<HTMLDivElement>(null);
+  const dictionaryCacheRef = useRef(new Map<string, DictionaryEntry>());
 
   const hasUnitUnsavedChanges = Boolean(
     editingUnit &&
@@ -176,7 +205,7 @@ export default function EnglishReadingApp() {
     if (Math.abs(topDifference) > 0.5) {
       window.scrollBy(0, topDifference);
     }
-  }, [hasStartedAi]);
+  }, [hasReaderSidePanel]);
 
   useEffect(() => {
     const container = aiChatHeadersRef.current;
@@ -251,6 +280,12 @@ export default function EnglishReadingApp() {
     window.addEventListener("click", closeVocabularyMenu);
     return () => window.removeEventListener("click", closeVocabularyMenu);
   }, [vocabularyMenuId]);
+
+  useEffect(() => {
+    if (currentView === "reader") return;
+    setShowVocabularyQuickView(false);
+    setQuickVocabularySearch("");
+  }, [currentView]);
 
   useEffect(() => {
     if (!hasUnitUnsavedChanges && !hasVocabularyUnsavedChanges) return;
@@ -365,7 +400,7 @@ export default function EnglishReadingApp() {
       }
       setValue(data.text);
     } catch (error) {
-      alert(error instanceof Error ? error.message : "AIによる生成に失敗しました");
+      alert(getAiRequestErrorMessage(error, "AIによる生成に失敗しました"));
     } finally {
       setGeneratingUnitField(null);
     }
@@ -415,6 +450,8 @@ export default function EnglishReadingApp() {
         setSelectedMeaning(text);
       } else {
         setSelectedText(text);
+        setDictionaryEntry(null);
+        setDictionaryError("");
         setIsSelectionPanelOpen(true);
         setSelectedLineId(lineId);
         if (showVocabularyForm) setNewVocabularyWord(text);
@@ -475,8 +512,10 @@ export default function EnglishReadingApp() {
         ),
       );
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : "AI解説を取得できませんでした";
+      const errorMessage = getAiRequestErrorMessage(
+        error,
+        "AI解説を取得できませんでした",
+      );
       setAiChats((current) =>
         current.map((chat) =>
           chat.id === chatId
@@ -526,6 +565,55 @@ export default function EnglishReadingApp() {
     void requestAiExplanation(chatId, [], subject, lineId);
   };
 
+  const searchDictionary = async () => {
+    const term = selectedText.trim();
+    const lineId = selectedLineId;
+    if (!term || lineId === null || !selectedUnit) return;
+
+    const cacheKey = term.toLocaleLowerCase();
+    const cachedEntry = dictionaryCacheRef.current.get(cacheKey);
+    setDictionaryError("");
+    if (cachedEntry) {
+      setDictionaryEntry(cachedEntry);
+      return;
+    }
+
+    const sourceLine =
+      selectedUnit.lines.find((line) => line.id === lineId)?.english ?? "";
+    const matchIndex = sourceLine.toLocaleLowerCase().indexOf(cacheKey);
+    const before = matchIndex >= 0 ? sourceLine.slice(0, matchIndex) : "";
+    const after =
+      matchIndex >= 0 ? sourceLine.slice(matchIndex + term.length) : "";
+    const leftContext = before.match(
+      /[\p{L}\p{N}'-]+(?=[^\p{L}\p{N}'-]*$)/u,
+    )?.[0];
+    const rightContext = after.match(/[\p{L}\p{N}'-]+/u)?.[0];
+
+    setDictionaryEntry(null);
+    setIsDictionaryLoading(true);
+    try {
+      const response = await fetch("/api/dictionary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ term, leftContext, rightContext }),
+      });
+      const result = (await response.json()) as DictionaryEntry & {
+        error?: string;
+      };
+      if (!response.ok || !result.definitions?.length) {
+        throw new Error(result.error || "辞書を検索できませんでした。");
+      }
+      dictionaryCacheRef.current.set(cacheKey, result);
+      setDictionaryEntry(result);
+    } catch (error) {
+      setDictionaryError(
+        getAiRequestErrorMessage(error, "辞書を検索できませんでした。"),
+      );
+    } finally {
+      setIsDictionaryLoading(false);
+    }
+  };
+
   const handleAiResponseSelection = (lineId?: number) => {
     const text = window.getSelection()?.toString().trim();
     if (!text) return;
@@ -538,6 +626,8 @@ export default function EnglishReadingApp() {
       return;
     }
     setSelectedText(text);
+    setDictionaryEntry(null);
+    setDictionaryError("");
     if (lineId !== undefined) setSelectedLineId(lineId);
     setIsSelectionPanelOpen(true);
   };
@@ -649,6 +739,16 @@ export default function EnglishReadingApp() {
           units.some((u) => u.id === v.unit_id && u.folder_id === vocabFolder),
         )
       : vocabulary;
+  const quickVocabularyQuery = quickVocabularySearch.trim().toLocaleLowerCase();
+  const quickVocabulary = selectedUnit
+    ? vocabulary.filter(
+        (item) =>
+          item.unit_id === selectedUnit.id &&
+          (!quickVocabularyQuery ||
+            item.word.toLocaleLowerCase().includes(quickVocabularyQuery) ||
+            item.meaning.toLocaleLowerCase().includes(quickVocabularyQuery)),
+      )
+    : [];
 
   const exportVocabularyCsv = () => {
     const escapeCsvValue = (value: string) =>
@@ -714,7 +814,7 @@ export default function EnglishReadingApp() {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
       <div
         className={
-          currentView === "reader" && hasStartedAi
+          currentView === "reader" && hasReaderSidePanel
             ? "mx-auto max-w-none"
             : "mx-auto max-w-7xl"
         }
@@ -1244,7 +1344,7 @@ export default function EnglishReadingApp() {
         {currentView === "reader" && (
           <div
             className={`max-w-4xl pb-20 ${
-              hasStartedAi
+              hasReaderSidePanel
                 ? "mx-auto lg:ml-auto lg:mr-[46vw] lg:max-w-4xl lg:pr-4 xl:mr-[42vw]"
                 : "mx-auto"
             }`}
@@ -1297,19 +1397,19 @@ export default function EnglishReadingApp() {
                     }}
                   >
                     <div
-                      className="select-text cursor-text"
+                      className="min-w-0 max-w-full select-text cursor-text"
                       onMouseUp={() => handleTextSelection(line.id)}
                     >
                       {line.showPhonetic &&
                         line.phonetic &&
                         !canAlignSegments &&
                         !canAlignPhonetic && (
-                        <div className="mb-1 text-sm leading-snug text-gray-500">
+                        <div className="mb-1 break-words text-sm leading-snug text-gray-500 [overflow-wrap:anywhere]">
                           {line.phonetic}
                         </div>
                       )}
                       {canAlignSegments ? (
-                        <div className="pt-1 text-lg leading-tight">
+                        <div className="max-w-full break-words pt-1 text-lg leading-tight [overflow-wrap:anywhere]">
                           {(() => {
                             let phoneticIndex = 0;
                             return pronunciationSegments.map(
@@ -1327,7 +1427,7 @@ export default function EnglishReadingApp() {
                                 return phonetic ? (
                                   <ruby
                                     key={`${line.id}-segment-${index}`}
-                                    className="leading-tight"
+                                    className="whitespace-nowrap leading-tight [ruby-overhang:none]"
                                   >
                                     {segment.text}
                                     <rt className="text-sm font-normal leading-none text-gray-500">
@@ -1335,7 +1435,10 @@ export default function EnglishReadingApp() {
                                     </rt>
                                   </ruby>
                                 ) : (
-                                  <span key={`${line.id}-segment-${index}`}>
+                                  <span
+                                    key={`${line.id}-segment-${index}`}
+                                    className="whitespace-nowrap"
+                                  >
                                     {segment.text}
                                   </span>
                                 );
@@ -1348,7 +1451,7 @@ export default function EnglishReadingApp() {
                           {englishWords.map((word, index) => (
                             <ruby
                               key={`${line.id}-${index}`}
-                              className="leading-tight"
+                              className="max-w-full whitespace-nowrap leading-tight [ruby-overhang:none]"
                             >
                               {word}
                               <rt className="text-sm font-normal leading-none text-gray-500">
@@ -1358,7 +1461,9 @@ export default function EnglishReadingApp() {
                           ))}
                         </div>
                       ) : (
-                        <div className="text-lg leading-snug">{line.english}</div>
+                        <div className="break-words text-lg leading-snug [overflow-wrap:anywhere]">
+                          {line.english}
+                        </div>
                       )}
                     </div>
 
@@ -1418,6 +1523,16 @@ export default function EnglishReadingApp() {
                       )}
                       {selectedText && !showVocabularyForm && (
                         <button
+                          type="button"
+                          onClick={() => void searchDictionary()}
+                          disabled={isDictionaryLoading}
+                          className="rounded bg-emerald-600 px-3 py-1.5 text-xs text-white hover:bg-emerald-700 disabled:bg-gray-400"
+                        >
+                          {isDictionaryLoading ? "検索中..." : "英英辞書"}
+                        </button>
+                      )}
+                      {selectedText && !showVocabularyForm && (
+                        <button
                           onClick={startAiExplanation}
                           disabled={
                             isAiLoading ||
@@ -1444,6 +1559,9 @@ export default function EnglishReadingApp() {
                           setExpandedAiChatId(null);
                           setAiQuestion("");
                           setShowAiQuestionInput(false);
+                          setDictionaryEntry(null);
+                          setDictionaryError("");
+                          setIsDictionaryLoading(false);
                         }}
                         className="absolute right-2 top-2 rounded border border-gray-300 bg-white/80 p-1.5 text-gray-600 hover:bg-white hover:text-gray-800"
                         aria-label="選択を閉じる"
@@ -1521,6 +1639,8 @@ export default function EnglishReadingApp() {
                             setShowVocabularyForm(false);
                             setSelectedText("");
                             setSelectedLineId(null);
+                            setDictionaryEntry(null);
+                            setDictionaryError("");
                           }}
                           disabled={
                             isSelectingMeaning &&
@@ -1535,6 +1655,16 @@ export default function EnglishReadingApp() {
                         </button>
                         {selectedText && (
                           <button
+                            type="button"
+                            onClick={() => void searchDictionary()}
+                            disabled={isDictionaryLoading}
+                            className="rounded bg-emerald-600 px-3 py-1.5 text-xs text-white hover:bg-emerald-700 disabled:bg-gray-400"
+                          >
+                            {isDictionaryLoading ? "検索中..." : "英英辞書"}
+                          </button>
+                        )}
+                        {selectedText && (
+                          <button
                             onClick={startAiExplanation}
                             disabled={
                               isAiLoading ||
@@ -1547,6 +1677,71 @@ export default function EnglishReadingApp() {
                           </button>
                         )}
                         </div>
+                      </div>
+                    )}
+
+                    {(dictionaryEntry || dictionaryError) && (
+                      <div className="mt-2 rounded border border-emerald-200 bg-white p-3 text-sm text-gray-800">
+                        {dictionaryError ? (
+                          <div className="flex items-center justify-between gap-3 text-red-700">
+                            <span>{dictionaryError}</span>
+                            <button
+                              type="button"
+                              onClick={() => void searchDictionary()}
+                              className="shrink-0 rounded border border-red-300 px-2 py-1 text-xs"
+                            >
+                              再試行
+                            </button>
+                          </div>
+                        ) : (
+                          dictionaryEntry && (
+                            <div>
+                              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                                <h4 className="text-base font-semibold text-emerald-800">
+                                  {dictionaryEntry.headword}
+                                </h4>
+                                {dictionaryEntry.word !== dictionaryEntry.headword && (
+                                  <span className="text-xs text-gray-500">
+                                    searched: {dictionaryEntry.word}
+                                  </span>
+                                )}
+                                {dictionaryEntry.phonetic && (
+                                  <span className="text-gray-600">
+                                    /
+                                    {dictionaryEntry.phonetic.replace(
+                                      /^\/+|\/+$/g,
+                                      "",
+                                    )}
+                                    /
+                                  </span>
+                                )}
+                              </div>
+                              <ol className="mt-2 max-h-52 list-decimal space-y-1 overflow-y-auto pl-5">
+                                {dictionaryEntry.definitions.map(
+                                  (definition, index) => (
+                                    <li key={`${definition.partOfSpeech}-${index}`}>
+                                      <span className="mr-1 text-xs italic text-emerald-700">
+                                        {definition.partOfSpeech}
+                                      </span>
+                                      {definition.definition}
+                                    </li>
+                                  ),
+                                )}
+                              </ol>
+                              {dictionaryEntry.example && (
+                                <p className="mt-2 border-t border-emerald-100 pt-2 text-gray-600">
+                                  <span className="mr-1 text-xs font-medium text-emerald-700">
+                                    Example
+                                  </span>
+                                  {dictionaryEntry.example}
+                                </p>
+                              )}
+                              <p className="mt-2 text-right text-[10px] text-gray-400">
+                                Definitions: Datamuse · IPA: Free Dictionary API
+                              </p>
+                            </div>
+                          )
+                        )}
                       </div>
                     )}
 
@@ -1747,13 +1942,92 @@ export default function EnglishReadingApp() {
                 )}
               </div>
               {/* === 訳・発音の表示切り替えボタン === */}
+              {showVocabularyQuickView && (
+                <aside className="fixed bottom-0 left-0 right-0 z-[60] flex max-h-[70vh] flex-col border-t-2 border-blue-200 bg-white shadow-2xl lg:bottom-auto lg:left-auto lg:right-0 lg:top-0 lg:h-screen lg:max-h-none lg:w-[46vw] lg:border-l-2 lg:border-t-0 xl:w-[42vw]">
+                  <div className="flex items-center gap-3 border-b border-gray-200 p-3">
+                    <div className="min-w-0 flex-1">
+                      <h3 className="font-semibold text-gray-800">単語帳</h3>
+                      <p className="truncate text-xs text-gray-500">
+                        {selectedUnit?.title ?? "現在のUNIT"}
+                      </p>
+                    </div>
+                    <span className="text-xs text-gray-500">
+                      {quickVocabulary.length}語
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!hasStartedAi) captureReadingScrollAnchor();
+                        setShowVocabularyQuickView(false);
+                        setQuickVocabularySearch("");
+                      }}
+                      className="rounded border border-gray-300 p-1.5 text-gray-600 hover:bg-gray-50"
+                      aria-label="単語帳クイックビューを閉じる"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+
+                  <div className="border-b border-gray-200 p-3">
+                    <input
+                      type="search"
+                      value={quickVocabularySearch}
+                      onChange={(event) =>
+                        setQuickVocabularySearch(event.target.value)
+                      }
+                      placeholder="単語・意味を検索"
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </div>
+
+                  <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                    {quickVocabulary.length === 0 ? (
+                      <p className="py-8 text-center text-sm text-gray-500">
+                        {quickVocabularyQuery
+                          ? "一致する単語がありません"
+                          : "このUNITには単語が登録されていません"}
+                      </p>
+                    ) : (
+                      <dl className="divide-y divide-gray-200 rounded-lg border border-gray-200 bg-white">
+                        {quickVocabulary.map((item) => (
+                          <div
+                            key={item.id}
+                            className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-3 px-3 py-2.5 text-sm"
+                          >
+                            <dt className="break-words font-medium text-gray-900">
+                              {item.word}
+                            </dt>
+                            <dd className="break-words text-gray-700">
+                              {item.meaning}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+                  </div>
+                </aside>
+              )}
               <div
                 className={`fixed bottom-3 z-50 flex flex-col gap-2 transition-[right] ${
-                  hasStartedAi
+                  hasReaderSidePanel
                     ? "right-3 lg:right-[calc(46vw+0.75rem)] xl:right-[calc(42vw+0.75rem)]"
                     : "right-3"
                 }`}
               >
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!hasStartedAi) captureReadingScrollAnchor();
+                    setQuickVocabularySearch("");
+                    setShowVocabularyQuickView((current) => !current);
+                  }}
+                  className={`flex items-center gap-1 rounded-lg bg-gray-700 px-3 py-2 text-sm text-white shadow-md hover:bg-gray-800 ${
+                    showVocabularyQuickView ? "opacity-100" : "opacity-75"
+                  }`}
+                >
+                  <BookOpen size={16} />
+                  単語帳
+                </button>
                 <button
                   onClick={() => {
                     if (!selectedUnit) return;
