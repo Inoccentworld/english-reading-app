@@ -23,6 +23,16 @@ type ExplainRequest = {
 
 const MAX_TEXT_LENGTH = 5000;
 const MAX_MESSAGES = 20;
+const PRIMARY_MODEL = "gemini-3.6-flash";
+const FALLBACK_MODEL = "gemini-3.5-flash-lite";
+
+const getErrorStatus = (error: unknown) =>
+  typeof error === "object" &&
+  error !== null &&
+  "status" in error &&
+  typeof error.status === "number"
+    ? error.status
+    : undefined;
 
 export async function POST(request: Request) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -72,19 +82,32 @@ export async function POST(request: Request) {
       apiKey,
       httpOptions: { timeout: GEMINI_REQUEST_TIMEOUT_MS },
     });
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: [
-        { role: "user", parts: [{ text: initialRequest }] },
-        ...messages.map((message) => ({
-          role: message.role,
-          parts: [{ text: message.text.trim() }],
-        })),
-      ],
-      config: {
-        systemInstruction: GEMINI_EXPLANATION_PROMPT,
-      },
-    });
+    const contents = [
+      { role: "user", parts: [{ text: initialRequest }] },
+      ...messages.map((message) => ({
+        role: message.role,
+        parts: [{ text: message.text.trim() }],
+      })),
+    ];
+    const generate = (model: string) =>
+      ai.models.generateContent({
+        model,
+        contents,
+        config: {
+          systemInstruction: GEMINI_EXPLANATION_PROMPT,
+        },
+      });
+
+    let response;
+    try {
+      response = await generate(PRIMARY_MODEL);
+    } catch (primaryError) {
+      if (getErrorStatus(primaryError) !== 503) throw primaryError;
+      console.warn(
+        `Gemini ${PRIMARY_MODEL} unavailable; retrying explanation with ${FALLBACK_MODEL}`,
+      );
+      response = await generate(FALLBACK_MODEL);
+    }
 
     const text = response.text?.trim();
     if (!text) {
