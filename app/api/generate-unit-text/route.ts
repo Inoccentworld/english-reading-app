@@ -27,6 +27,16 @@ type GeneratedSentence = {
 };
 
 const MAX_SOURCE_LENGTH = 50000;
+const PRIMARY_MODEL = "gemini-3.6-flash";
+const FALLBACK_MODEL = "gemini-3.5-flash-lite";
+
+const getErrorStatus = (error: unknown) =>
+  typeof error === "object" &&
+  error !== null &&
+  "status" in error &&
+  typeof error.status === "number"
+    ? error.status
+    : undefined;
 
 export async function POST(request: Request) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -112,18 +122,30 @@ export async function POST(request: Request) {
       apiKey,
       httpOptions: { timeout: GEMINI_REQUEST_TIMEOUT_MS },
     });
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: passage,
-      config: {
-        systemInstruction:
-          mode === "translation"
-            ? GEMINI_UNIT_TRANSLATION_PROMPT
-            : GEMINI_UNIT_PHONETIC_PROMPT,
-        responseMimeType: "application/json",
-        responseJsonSchema,
-      },
-    });
+    const generate = (model: string) =>
+      ai.models.generateContent({
+        model,
+        contents: passage,
+        config: {
+          systemInstruction:
+            mode === "translation"
+              ? GEMINI_UNIT_TRANSLATION_PROMPT
+              : GEMINI_UNIT_PHONETIC_PROMPT,
+          responseMimeType: "application/json",
+          responseJsonSchema,
+        },
+      });
+
+    let response;
+    try {
+      response = await generate(PRIMARY_MODEL);
+    } catch (primaryError) {
+      if (getErrorStatus(primaryError) !== 503) throw primaryError;
+      console.warn(
+        `Gemini ${PRIMARY_MODEL} unavailable; retrying with ${FALLBACK_MODEL}`,
+      );
+      response = await generate(FALLBACK_MODEL);
+    }
 
     const responseText = response.text?.trim();
     if (!responseText) {
