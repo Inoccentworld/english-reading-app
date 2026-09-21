@@ -8,23 +8,35 @@ const DEFAULT_STATUS = 500;
 
 export const GEMINI_REQUEST_TIMEOUT_MS = 60_000;
 
+export const getGeminiErrorStatus = (error: unknown) =>
+  typeof error === "object" &&
+  error !== null &&
+  "status" in error &&
+  typeof error.status === "number"
+    ? error.status
+    : undefined;
+
+export const isGeminiDailyQuotaError = (error: unknown) => {
+  if (getGeminiErrorStatus(error) !== 429) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  const normalizedMessage = message.toLowerCase();
+  return (
+    normalizedMessage.includes("quota_exceeded") ||
+    normalizedMessage.includes("perday") ||
+    normalizedMessage.includes("per day") ||
+    normalizedMessage.includes("requests per day") ||
+    normalizedMessage.includes("permodelperday") ||
+    normalizedMessage.includes("free_tier_requests")
+  );
+};
+
 export function getGeminiErrorDetails(error: unknown): GeminiErrorDetails {
-  const apiStatus =
-    typeof error === "object" &&
-    error !== null &&
-    "status" in error &&
-    typeof error.status === "number"
-      ? error.status
-      : undefined;
+  const apiStatus = getGeminiErrorStatus(error);
   const rawMessage = error instanceof Error ? error.message : String(error);
   const normalizedMessage = rawMessage.toLowerCase();
 
   if (apiStatus === 429) {
-    const isDailyLimit =
-      normalizedMessage.includes("perday") ||
-      normalizedMessage.includes("per day") ||
-      normalizedMessage.includes("requests per day") ||
-      normalizedMessage.includes("free_tier_requests");
+    const isDailyLimit = isGeminiDailyQuotaError(error);
 
     return isDailyLimit
       ? {

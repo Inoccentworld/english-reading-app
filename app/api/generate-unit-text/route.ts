@@ -7,7 +7,9 @@ import {
 import { getSpokenSegments } from "@/lib/pronunciationSegments";
 import {
   GEMINI_REQUEST_TIMEOUT_MS,
+  getGeminiErrorStatus,
   getGeminiErrorDetails,
+  isGeminiDailyQuotaError,
 } from "@/lib/geminiError";
 
 type GenerationMode = "translation" | "phonetic";
@@ -29,14 +31,6 @@ type GeneratedSentence = {
 const MAX_SOURCE_LENGTH = 50000;
 const PRIMARY_MODEL = "gemini-3.6-flash";
 const FALLBACK_MODEL = "gemini-3.5-flash-lite";
-
-const getErrorStatus = (error: unknown) =>
-  typeof error === "object" &&
-  error !== null &&
-  "status" in error &&
-  typeof error.status === "number"
-    ? error.status
-    : undefined;
 
 export async function POST(request: Request) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -140,9 +134,12 @@ export async function POST(request: Request) {
     try {
       response = await generate(PRIMARY_MODEL);
     } catch (primaryError) {
-      if (getErrorStatus(primaryError) !== 503) throw primaryError;
+      const shouldUseFallback =
+        getGeminiErrorStatus(primaryError) === 503 ||
+        isGeminiDailyQuotaError(primaryError);
+      if (!shouldUseFallback) throw primaryError;
       console.warn(
-        `Gemini ${PRIMARY_MODEL} unavailable; retrying with ${FALLBACK_MODEL}`,
+        `Gemini ${PRIMARY_MODEL} unavailable or quota exhausted; retrying with ${FALLBACK_MODEL}`,
       );
       response = await generate(FALLBACK_MODEL);
     }

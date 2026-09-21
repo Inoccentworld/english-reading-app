@@ -3,7 +3,9 @@ import { NextResponse } from "next/server";
 import { GEMINI_EXPLANATION_PROMPT } from "@/lib/geminiExplanationPrompt";
 import {
   GEMINI_REQUEST_TIMEOUT_MS,
+  getGeminiErrorStatus,
   getGeminiErrorDetails,
+  isGeminiDailyQuotaError,
 } from "@/lib/geminiError";
 
 type ConversationMessage = {
@@ -25,14 +27,6 @@ const MAX_TEXT_LENGTH = 5000;
 const MAX_MESSAGES = 20;
 const PRIMARY_MODEL = "gemini-3.6-flash";
 const FALLBACK_MODEL = "gemini-3.5-flash-lite";
-
-const getErrorStatus = (error: unknown) =>
-  typeof error === "object" &&
-  error !== null &&
-  "status" in error &&
-  typeof error.status === "number"
-    ? error.status
-    : undefined;
 
 export async function POST(request: Request) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -102,9 +96,12 @@ export async function POST(request: Request) {
     try {
       response = await generate(PRIMARY_MODEL);
     } catch (primaryError) {
-      if (getErrorStatus(primaryError) !== 503) throw primaryError;
+      const shouldUseFallback =
+        getGeminiErrorStatus(primaryError) === 503 ||
+        isGeminiDailyQuotaError(primaryError);
+      if (!shouldUseFallback) throw primaryError;
       console.warn(
-        `Gemini ${PRIMARY_MODEL} unavailable; retrying explanation with ${FALLBACK_MODEL}`,
+        `Gemini ${PRIMARY_MODEL} unavailable or quota exhausted; retrying explanation with ${FALLBACK_MODEL}`,
       );
       response = await generate(FALLBACK_MODEL);
     }
