@@ -1,8 +1,12 @@
 alter table public.folders
-add column if not exists parent_id uuid null;
+add column if not exists parent_id text null;
 
 alter table public.folders
 drop constraint if exists folders_parent_id_fkey;
+
+alter table public.folders
+alter column parent_id type text
+using parent_id::text;
 
 alter table public.folders
 add constraint folders_parent_id_fkey
