@@ -44,3 +44,13 @@ If the source is Chinese:
 - Return standard Hanyu Pinyin with tone marks instead of IPA.
 - Put only the pinyin in each tokens item.
 `;
+
+export const GEMINI_UNIT_COMBINED_PROMPT = `
+${GEMINI_UNIT_TRANSLATION_PROMPT}
+
+${GEMINI_UNIT_PHONETIC_PROMPT}
+
+Complete both tasks in the same response. For every supplied source line, return
+the original line in original, its Japanese translation in translation, and its
+context-sensitive pronunciation array in tokens. Do not omit either result.
+`;

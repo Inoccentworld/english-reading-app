@@ -1,6 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
 import {
+  GEMINI_UNIT_COMBINED_PROMPT,
   GEMINI_UNIT_PHONETIC_PROMPT,
   GEMINI_UNIT_TRANSLATION_PROMPT,
 } from "@/lib/geminiUnitGenerationPrompt";
@@ -16,7 +17,7 @@ import {
   isGeminiDailyQuotaError,
 } from "@/lib/geminiError";
 
-type GenerationMode = "translation" | "phonetic";
+type GenerationMode = "translation" | "phonetic" | "both";
 
 type GenerationRequest = {
   source?: string;
@@ -59,7 +60,11 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    if (mode !== "translation" && mode !== "phonetic") {
+    if (
+      mode !== "translation" &&
+      mode !== "phonetic" &&
+      mode !== "both"
+    ) {
       return NextResponse.json(
         { error: "生成する項目が正しく指定されていません" },
         { status: 400 },
@@ -68,18 +73,24 @@ export async function POST(request: Request) {
 
     const sourceLines = source.split("\n");
     const nonEmptyLines = sourceLines.filter((line) => line.trim());
-    const sentenceProperties =
-      mode === "translation"
+    const includesTranslation = mode !== "phonetic";
+    const includesPhonetic = mode !== "translation";
+    const sentenceProperties = {
+      ...(includesTranslation
         ? {
             original: { type: "string" },
             translation: { type: "string" },
           }
-        : {
+        : {}),
+      ...(includesPhonetic
+        ? {
             tokens: {
               type: "array",
               items: { type: "string" },
             },
-          };
+          }
+        : {}),
+    };
     const responseJsonSchema = {
       type: "object",
       properties: {
@@ -90,10 +101,10 @@ export async function POST(request: Request) {
           items: {
             type: "object",
             properties: sentenceProperties,
-            required:
-              mode === "translation"
-                ? ["original", "translation"]
-                : ["tokens"],
+            required: [
+              ...(includesTranslation ? ["original", "translation"] : []),
+              ...(includesPhonetic ? ["tokens"] : []),
+            ],
             additionalProperties: false,
           },
         },
@@ -105,7 +116,7 @@ export async function POST(request: Request) {
     const passage = JSON.stringify({
       lines: nonEmptyLines.map((line) => ({
         original: line,
-        ...(mode === "phonetic"
+        ...(includesPhonetic
           ? {
               spokenSegments: getPronounceableSegments(line).map(
                 (segment) => segment.text,
@@ -124,9 +135,11 @@ export async function POST(request: Request) {
         contents: passage,
         config: {
           systemInstruction:
-            mode === "translation"
-              ? GEMINI_UNIT_TRANSLATION_PROMPT
-              : GEMINI_UNIT_PHONETIC_PROMPT,
+            mode === "both"
+              ? GEMINI_UNIT_COMBINED_PROMPT
+              : mode === "translation"
+                ? GEMINI_UNIT_TRANSLATION_PROMPT
+                : GEMINI_UNIT_PHONETIC_PROMPT,
           responseMimeType: "application/json",
           responseJsonSchema,
         },
@@ -160,7 +173,8 @@ export async function POST(request: Request) {
       sentences?: GeneratedSentence[];
     };
     if (
-      mode === "translation" &&
+      includesTranslation &&
+      !includesPhonetic &&
       parsed.sentences?.length !== nonEmptyLines.length
     ) {
       return NextResponse.json(
@@ -171,7 +185,7 @@ export async function POST(request: Request) {
 
     parsed.sentences ??= [];
 
-    if (mode === "phonetic") {
+    if (includesPhonetic) {
       for (let index = 0; index < nonEmptyLines.length; index += 1) {
         const line = nonEmptyLines[index];
         const expectedTokenCount = getPronounceableSegments(line).length;
@@ -232,7 +246,10 @@ export async function POST(request: Request) {
             };
             const repairedSentence = repaired.sentences?.[0];
             if (repairedSentence?.tokens) {
-              parsed.sentences[index] = repairedSentence;
+              parsed.sentences[index] = {
+                ...parsed.sentences[index],
+                tokens: repairedSentence.tokens,
+              };
             }
           }
         } catch (repairError) {
@@ -246,38 +263,55 @@ export async function POST(request: Request) {
 
     let generatedIndex = 0;
     const reviewIssues: PhoneticReviewIssue[] = [];
-    const generatedText = sourceLines
-      .map((line, sourceLineIndex) => {
-        if (!line.trim()) return "";
-        const sentence = parsed.sentences?.[generatedIndex++];
-        if (mode === "translation") {
-          return sentence?.translation?.trim() ?? "";
-        }
+    const translationLines: string[] = [];
+    const phoneticLines: string[] = [];
+    sourceLines.forEach((line, sourceLineIndex) => {
+      if (!line.trim()) {
+        translationLines.push("");
+        phoneticLines.push("");
+        return;
+      }
+      const sentence = parsed.sentences?.[generatedIndex++];
+      if (includesTranslation) {
+        translationLines.push(sentence?.translation?.trim() ?? "");
+      }
+      if (!includesPhonetic) return;
 
-        const displaySegments = getSpokenSegments(line);
-        const expectedTokens = getPronounceableSegments(line);
-        const generatedTokens = sentence?.tokens ?? [];
-        if (generatedTokens.length !== expectedTokens.length) {
-          reviewIssues.push({
-            lineIndex: sourceLineIndex,
-            expectedCount: expectedTokens.length,
-            tokens: generatedTokens,
-          });
-        }
-        let generatedTokenIndex = 0;
-        return displaySegments
+      const displaySegments = getSpokenSegments(line);
+      const expectedTokens = getPronounceableSegments(line);
+      const generatedTokens = sentence?.tokens ?? [];
+      if (generatedTokens.length !== expectedTokens.length) {
+        reviewIssues.push({
+          lineIndex: sourceLineIndex,
+          expectedCount: expectedTokens.length,
+          tokens: generatedTokens,
+        });
+      }
+      let generatedTokenIndex = 0;
+      phoneticLines.push(
+        displaySegments
           .map((segment) =>
             isPronounceableSegment(segment)
               ? (generatedTokens[generatedTokenIndex++] ?? "").trim()
               : "",
           )
-          .join(" | ");
-      })
-      .join("\n");
+          .join(" | "),
+      );
+    });
+
+    const translationText = translationLines.join("\n");
+    const phoneticText = phoneticLines.join("\n");
 
     return NextResponse.json({
-      text: generatedText,
-      phoneticReview: mode === "phonetic" ? reviewIssues : undefined,
+      text:
+        mode === "translation"
+          ? translationText
+          : mode === "phonetic"
+            ? phoneticText
+            : undefined,
+      translationText: mode === "both" ? translationText : undefined,
+      phoneticText: mode === "both" ? phoneticText : undefined,
+      phoneticReview: includesPhonetic ? reviewIssues : undefined,
     });
   } catch (error) {
     console.error("Gemini unit text generation error", error);

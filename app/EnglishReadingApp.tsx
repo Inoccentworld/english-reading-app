@@ -13,6 +13,8 @@ import {
   FolderPlus,
   MoreVertical,
   Save,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import {
@@ -24,7 +26,13 @@ import {
 type FolderType = {
   id: string;
   name: string;
+  parent_id: string | null;
   created_at?: string;
+};
+
+type DraggedLibraryItem = {
+  type: "folder" | "unit";
+  id: string;
 };
 
 type UnitType = {
@@ -302,6 +310,14 @@ export default function EnglishReadingApp() {
   const [newFolderName, setNewFolderName] = useState("");
   const [showFolderInput, setShowFolderInput] = useState(false);
   const [folderMenuId, setFolderMenuId] = useState<string | null>(null);
+  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [draggedLibraryItem, setDraggedLibraryItem] =
+    useState<DraggedLibraryItem | null>(null);
+  const [libraryDropTarget, setLibraryDropTarget] = useState<string | null>(
+    null,
+  );
 
   // === ユニット追加用 ===
   const [newUnitTitle, setNewUnitTitle] = useState("");
@@ -358,7 +374,7 @@ export default function EnglishReadingApp() {
   >([]);
   const [editUnitFolder, setEditUnitFolder] = useState("");
   const [generatingUnitField, setGeneratingUnitField] = useState<
-    "translation" | "phonetic" | null
+    "translation" | "phonetic" | "both" | null
   >(null);
   const hasStartedAi = aiChats.length > 0;
   const hasReaderSidePanel = hasStartedAi || showVocabularyQuickView;
@@ -516,7 +532,12 @@ export default function EnglishReadingApp() {
 
     const { error } = await supabase
       .from("folders")
-      .insert([{ name: newFolderName.trim() }])
+      .insert([
+        {
+          name: newFolderName.trim(),
+          parent_id: selectedFolder,
+        },
+      ])
       .select(); // ← ここで select 権限が無いと失敗する
 
     if (error) {
@@ -527,17 +548,52 @@ export default function EnglishReadingApp() {
 
     // data が返らない/空の可能性にも備える
     await loadAll();
+    if (selectedFolder) {
+      setExpandedFolderIds((current) =>
+        new Set(current).add(selectedFolder),
+      );
+    }
     setNewFolderName("");
     setShowFolderInput(false);
   };
 
   const deleteFolder = async (id: string) => {
-    await supabase.from("folders").delete().eq("id", id);
-    setFolders(folders.filter((f) => f.id !== id));
-    setUnits(
-      units.map((u) => (u.folder_id === id ? { ...u, folder_id: null } : u)),
+    const descendantIds = new Set<string>([id]);
+    let addedFolder = true;
+    while (addedFolder) {
+      addedFolder = false;
+      folders.forEach((folder) => {
+        if (
+          folder.parent_id &&
+          descendantIds.has(folder.parent_id) &&
+          !descendantIds.has(folder.id)
+        ) {
+          descendantIds.add(folder.id);
+          addedFolder = true;
+        }
+      });
+    }
+    const folderIds = Array.from(descendantIds);
+    const containedUnits = units.filter(
+      (unit) => unit.folder_id && descendantIds.has(unit.folder_id),
     );
-    if (selectedFolder === id) setSelectedFolder(null);
+    const { error } = await supabase.from("folders").delete().eq("id", id);
+    if (error) {
+      alert(`フォルダー削除に失敗: ${error.message}`);
+      await loadAll();
+      return;
+    }
+    setFolders(folders.filter((folder) => !descendantIds.has(folder.id)));
+    const deletedUnitIds = new Set(containedUnits.map((unit) => unit.id));
+    setUnits(units.filter((unit) => !deletedUnitIds.has(unit.id)));
+    if (selectedFolder && descendantIds.has(selectedFolder)) {
+      setSelectedFolder(null);
+    }
+    setExpandedFolderIds((current) => {
+      const next = new Set(current);
+      folderIds.forEach((folderId) => next.delete(folderId));
+      return next;
+    });
     setFolderMenuId(null);
   };
 
@@ -619,6 +675,55 @@ export default function EnglishReadingApp() {
       if (mode === "phonetic") {
         setPhoneticReview?.(data.phoneticReview ?? []);
       }
+    } catch (error) {
+      alert(getAiRequestErrorMessage(error, "AIによる生成に失敗しました"));
+    } finally {
+      setGeneratingUnitField(null);
+    }
+  };
+
+  const generateBothUnitFields = async (
+    source: string,
+    currentJapanese: string,
+    currentPhonetic: string,
+    setJapanese: (value: string) => void,
+    setPhonetic: (value: string) => void,
+    setPhoneticReview: (issues: PhoneticReviewIssue[]) => void,
+  ) => {
+    if (!source.trim()) {
+      alert("先に原文を入力してください");
+      return;
+    }
+    if (
+      (currentJapanese.trim() || currentPhonetic.trim()) &&
+      !confirm("現在の和訳と発音記号をAIの生成結果で上書きしますか？")
+    ) {
+      return;
+    }
+
+    setGeneratingUnitField("both");
+    try {
+      const response = await fetch("/api/generate-unit-text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source, mode: "both" }),
+      });
+      const data = (await response.json()) as {
+        translationText?: string;
+        phoneticText?: string;
+        phoneticReview?: PhoneticReviewIssue[];
+        error?: string;
+      };
+      if (
+        !response.ok ||
+        typeof data.translationText !== "string" ||
+        typeof data.phoneticText !== "string"
+      ) {
+        throw new Error(data.error || "AIから生成結果を取得できませんでした");
+      }
+      setJapanese(data.translationText);
+      setPhonetic(data.phoneticText);
+      setPhoneticReview(data.phoneticReview ?? []);
     } catch (error) {
       alert(getAiRequestErrorMessage(error, "AIによる生成に失敗しました"));
     } finally {
@@ -857,6 +962,269 @@ export default function EnglishReadingApp() {
     selectedFolder
       ? units.filter((u) => u.folder_id === selectedFolder)
       : units;
+
+  const getFolderChildren = (parentId: string | null) =>
+    folders.filter((folder) => (folder.parent_id ?? null) === parentId);
+
+  const getDescendantFolderIds = (folderId: string) => {
+    const descendants = new Set<string>();
+    const pending = [folderId];
+    while (pending.length > 0) {
+      const parentId = pending.pop();
+      folders.forEach((folder) => {
+        if (
+          folder.parent_id === parentId &&
+          !descendants.has(folder.id)
+        ) {
+          descendants.add(folder.id);
+          pending.push(folder.id);
+        }
+      });
+    }
+    return descendants;
+  };
+
+  const getFolderPath = (folderId: string) => {
+    const names: string[] = [];
+    const visited = new Set<string>();
+    let currentId: string | null = folderId;
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const folder = folders.find((item) => item.id === currentId);
+      if (!folder) break;
+      names.unshift(folder.name);
+      currentId = folder.parent_id ?? null;
+    }
+    return names.join(" / ");
+  };
+
+  const getFolderOptions = () => {
+    const options: { folder: FolderType; depth: number }[] = [];
+    const visited = new Set<string>();
+    const walk = (parentId: string | null, depth: number) => {
+      getFolderChildren(parentId).forEach((folder) => {
+        if (visited.has(folder.id)) return;
+        visited.add(folder.id);
+        options.push({ folder, depth });
+        walk(folder.id, depth + 1);
+      });
+    };
+    walk(null, 0);
+    folders.forEach((folder) => {
+      if (!visited.has(folder.id)) options.push({ folder, depth: 0 });
+    });
+    return options;
+  };
+
+  const moveLibraryItem = async (targetFolderId: string | null) => {
+    const dragged = draggedLibraryItem;
+    setLibraryDropTarget(null);
+    setDraggedLibraryItem(null);
+    if (!dragged) return;
+
+    if (dragged.type === "folder") {
+      if (dragged.id === targetFolderId) return;
+      const descendants = getDescendantFolderIds(dragged.id);
+      if (targetFolderId && descendants.has(targetFolderId)) {
+        alert("フォルダーを自身の子フォルダー内へ移動することはできません。");
+        return;
+      }
+      const currentFolder = folders.find((folder) => folder.id === dragged.id);
+      if ((currentFolder?.parent_id ?? null) === targetFolderId) return;
+      const { error } = await supabase
+        .from("folders")
+        .update({ parent_id: targetFolderId })
+        .eq("id", dragged.id);
+      if (error) {
+        alert(`フォルダーの移動に失敗: ${error.message}`);
+        return;
+      }
+      setFolders((current) =>
+        current.map((folder) =>
+          folder.id === dragged.id
+            ? { ...folder, parent_id: targetFolderId }
+            : folder,
+        ),
+      );
+    } else {
+      const currentUnit = units.find((unit) => unit.id === dragged.id);
+      if ((currentUnit?.folder_id ?? null) === targetFolderId) return;
+      const { error } = await supabase
+        .from("units")
+        .update({ folder_id: targetFolderId })
+        .eq("id", dragged.id);
+      if (error) {
+        alert(`ユニットの移動に失敗: ${error.message}`);
+        return;
+      }
+      setUnits((current) =>
+        current.map((unit) =>
+          unit.id === dragged.id
+            ? { ...unit, folder_id: targetFolderId }
+            : unit,
+        ),
+      );
+    }
+
+    if (targetFolderId) {
+      setExpandedFolderIds((current) =>
+        new Set(current).add(targetFolderId),
+      );
+    }
+  };
+
+  const renderFolderTree = (
+    parentId: string | null,
+    depth = 0,
+    ancestors = new Set<string>(),
+  ): React.ReactNode =>
+    getFolderChildren(parentId).map((folder) => {
+      if (ancestors.has(folder.id)) return null;
+      const children = getFolderChildren(folder.id);
+      const isExpanded = expandedFolderIds.has(folder.id);
+      const nextAncestors = new Set(ancestors).add(folder.id);
+      const isDropTarget = libraryDropTarget === `folder:${folder.id}`;
+      return (
+        <div key={folder.id}>
+          <div
+            draggable
+            onDragStart={(event) => {
+              event.stopPropagation();
+              event.dataTransfer.effectAllowed = "move";
+              setDraggedLibraryItem({ type: "folder", id: folder.id });
+            }}
+            onDragEnd={() => {
+              setDraggedLibraryItem(null);
+              setLibraryDropTarget(null);
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              event.dataTransfer.dropEffect = "move";
+              setLibraryDropTarget(`folder:${folder.id}`);
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              void moveLibraryItem(folder.id);
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setFolderMenuId(folder.id);
+            }}
+            className={`relative flex items-center rounded text-sm ${
+              isDropTarget ? "ring-2 ring-blue-400 bg-blue-50" : ""
+            }`}
+            style={{ paddingLeft: `${depth * 14}px` }}
+          >
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setExpandedFolderIds((current) => {
+                  const next = new Set(current);
+                  if (next.has(folder.id)) next.delete(folder.id);
+                  else next.add(folder.id);
+                  return next;
+                });
+              }}
+              disabled={children.length === 0}
+              className="shrink-0 p-1 text-gray-500 disabled:opacity-20"
+              aria-label={isExpanded ? "フォルダーを閉じる" : "フォルダーを開く"}
+            >
+              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedFolder(folder.id);
+                if (children.length > 0) {
+                  setExpandedFolderIds((current) =>
+                    new Set(current).add(folder.id),
+                  );
+                }
+              }}
+              className={`min-w-0 flex-1 flex items-center justify-between gap-2 px-1 py-2 text-left ${
+                selectedFolder === folder.id
+                  ? "text-blue-800 font-medium"
+                  : "text-gray-700 hover:text-gray-900"
+              }`}
+            >
+              <span className="flex min-w-0 items-center gap-1.5">
+                <Folder size={15} className="shrink-0" />
+                <span className="truncate">{folder.name}</span>
+              </span>
+              <span className="text-xs opacity-70">
+                {units.filter((unit) => unit.folder_id === folder.id).length}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setFolderMenuId(
+                  folderMenuId === folder.id ? null : folder.id,
+                );
+              }}
+              className="shrink-0 p-1 text-gray-500 hover:text-gray-800"
+              aria-label={`${folder.name}のメニュー`}
+            >
+              <MoreVertical size={15} />
+            </button>
+
+            {folderMenuId === folder.id && (
+              <div
+                className="absolute right-0 top-full z-30 w-40 rounded-md border border-gray-200 bg-white py-1 shadow-lg"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedFolder(folder.id);
+                    setExpandedFolderIds((current) =>
+                      new Set(current).add(folder.id),
+                    );
+                    setShowFolderInput(true);
+                    setFolderMenuId(null);
+                  }}
+                  className="block w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                >
+                  サブフォルダーを追加
+                </button>
+                <button
+                  type="button"
+                  onClick={() => renameFolder(folder)}
+                  className="block w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                >
+                  名前を変更
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const descendants = getDescendantFolderIds(folder.id);
+                    const affectedUnits = units.filter(
+                      (unit) =>
+                        unit.folder_id === folder.id ||
+                        (unit.folder_id && descendants.has(unit.folder_id)),
+                    ).length;
+                    const message =
+                      descendants.size > 0 || affectedUnits > 0
+                        ? `「${folder.name}」には子フォルダー${descendants.size}個、ユニット${affectedUnits}個が含まれています。すべて削除しますか？`
+                        : `「${folder.name}」を削除しますか？`;
+                    if (window.confirm(message)) void deleteFolder(folder.id);
+                  }}
+                  className="block w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                >
+                  削除
+                </button>
+              </div>
+            )}
+          </div>
+          {isExpanded && renderFolderTree(folder.id, depth + 1, nextAncestors)}
+        </div>
+      );
+    });
   const startEditUnit = (unit: UnitType) => {
     setEditingUnit(unit);
     setEditUnitTitle(unit.title);
@@ -1093,7 +1461,10 @@ export default function EnglishReadingApp() {
                 学習ユニット一覧
               </h2>
               <button
-                onClick={() => setCurrentView("add")}
+                onClick={() => {
+                  setNewUnitFolder(selectedFolder ?? "");
+                  setCurrentView("add");
+                }}
                 className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
               >
                 <Plus size={20} />
@@ -1137,80 +1508,32 @@ export default function EnglishReadingApp() {
                 <div className="space-y-1">
                   <button
                     onClick={() => setSelectedFolder(null)}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                      setLibraryDropTarget("root");
+                    }}
+                    onDragLeave={() =>
+                      setLibraryDropTarget((current) =>
+                        current === "root" ? null : current,
+                      )
+                    }
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      void moveLibraryItem(null);
+                    }}
                     className={`w-full flex items-center justify-between px-3 py-2 rounded text-sm ${
-                      selectedFolder === null
+                      libraryDropTarget === "root"
+                        ? "bg-blue-50 text-blue-800 ring-2 ring-blue-400"
+                        : selectedFolder === null
                         ? "bg-blue-100 text-blue-800 font-medium"
                         : "text-gray-700 hover:bg-gray-100"
                     }`}
                   >
-                    <span>すべて</span>
+                    <span>すべて・最上位</span>
                     <span className="text-xs opacity-70">{units.length}</span>
                   </button>
-                  {folders.map((folder) => (
-                    <div
-                      key={folder.id}
-                      className="relative flex items-center"
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setFolderMenuId(folder.id);
-                      }}
-                    >
-                      <button
-                        onClick={() => setSelectedFolder(folder.id)}
-                        className={`min-w-0 flex-1 flex items-center justify-between gap-2 px-3 py-2 rounded text-sm ${
-                          selectedFolder === folder.id
-                            ? "bg-blue-100 text-blue-800 font-medium"
-                            : "text-gray-700 hover:bg-gray-100"
-                        }`}
-                      >
-                        <span className="truncate">{folder.name}</span>
-                        <span className="text-xs opacity-70">
-                          {units.filter((u) => u.folder_id === folder.id).length}
-                        </span>
-                      </button>
-                      <button
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setFolderMenuId(
-                            folderMenuId === folder.id ? null : folder.id,
-                          );
-                        }}
-                        className="p-1 text-gray-500 hover:text-gray-800"
-                        aria-label={`${folder.name}のメニュー`}
-                      >
-                        <MoreVertical size={16} />
-                      </button>
-
-                      {folderMenuId === folder.id && (
-                        <div
-                          className="absolute right-0 top-full z-20 w-32 rounded-md border border-gray-200 bg-white py-1 shadow-lg"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          <button
-                            onClick={() => renameFolder(folder)}
-                            className="block w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                          >
-                            名前を変更
-                          </button>
-                          <button
-                            onClick={() => {
-                              if (
-                                window.confirm(
-                                  `「${folder.name}」を削除しますか？`,
-                                )
-                              ) {
-                                void deleteFolder(folder.id);
-                              }
-                            }}
-                            className="block w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
-                          >
-                            削除
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                  {renderFolderTree(null)}
                 </div>
               </aside>
 
@@ -1225,7 +1548,16 @@ export default function EnglishReadingApp() {
                 {getFilteredUnits().map((unit) => (
                   <div
                     key={unit.id}
-                    className="bg-white p-6 rounded-lg shadow-md border border-gray-200"
+                    draggable
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = "move";
+                      setDraggedLibraryItem({ type: "unit", id: unit.id });
+                    }}
+                    onDragEnd={() => {
+                      setDraggedLibraryItem(null);
+                      setLibraryDropTarget(null);
+                    }}
+                    className="cursor-grab bg-white p-6 rounded-lg shadow-md border border-gray-200 active:cursor-grabbing"
                   >
                     <div className="flex justify-between items-start gap-4">
                       <div className="flex-1">
@@ -1237,7 +1569,7 @@ export default function EnglishReadingApp() {
                         </p>
                         {unit.folder_id && (
                           <span className="inline-block mt-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
-                            {folders.find((f) => f.id === unit.folder_id)?.name}
+                            {getFolderPath(unit.folder_id)}
                           </span>
                         )}
                       </div>
@@ -1315,9 +1647,9 @@ export default function EnglishReadingApp() {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg"
                 >
                   <option value="">なし</option>
-                  {folders.map((folder) => (
+                  {getFolderOptions().map(({ folder, depth }) => (
                     <option key={folder.id} value={folder.id}>
-                      {folder.name}
+                      {`${"　".repeat(depth)}${depth > 0 ? "└ " : ""}${folder.name}`}
                     </option>
                   ))}
                 </select>
@@ -1325,9 +1657,30 @@ export default function EnglishReadingApp() {
 
               <div className="space-y-3">
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">
-                    英文
-                  </label>
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <label className="text-xs font-medium text-gray-600">
+                      英文
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        generateBothUnitFields(
+                          newUnitEnglish,
+                          newUnitJapanese,
+                          newUnitPhonetic,
+                          setNewUnitJapanese,
+                          setNewUnitPhonetic,
+                          setNewUnitPhoneticReview,
+                        )
+                      }
+                      disabled={generatingUnitField !== null}
+                      className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {generatingUnitField === "both"
+                        ? "生成中..."
+                        : "和訳＋発音をAI生成"}
+                    </button>
+                  </div>
                   <textarea
                     value={newUnitEnglish}
                     onChange={(e) => {
@@ -1339,15 +1692,10 @@ export default function EnglishReadingApp() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">
-                    和訳
-                  </label>
-                  <textarea
-                    value={newUnitJapanese}
-                    onChange={(e) => setNewUnitJapanese(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
-                  />
-                  <div className="mt-2 flex justify-end">
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <label className="text-xs font-medium text-gray-600">
+                      和訳
+                    </label>
                     <button
                       type="button"
                       onClick={() =>
@@ -1366,20 +1714,18 @@ export default function EnglishReadingApp() {
                         : "AIで生成"}
                     </button>
                   </div>
+                  <textarea
+                    value={newUnitJapanese}
+                    onChange={(e) => setNewUnitJapanese(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
+                  />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">
-                    発音記号
-                  </label>
-                  <PhoneticEditor
-                    source={newUnitEnglish}
-                    value={newUnitPhonetic}
-                    issues={newUnitPhoneticReview}
-                    onChange={setNewUnitPhonetic}
-                    onIssuesChange={setNewUnitPhoneticReview}
-                  />
-                  <div className="mt-2 flex justify-end">
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <label className="text-xs font-medium text-gray-600">
+                      発音記号
+                    </label>
                     <button
                       type="button"
                       onClick={() =>
@@ -1399,6 +1745,13 @@ export default function EnglishReadingApp() {
                         : "AIで生成"}
                     </button>
                   </div>
+                  <PhoneticEditor
+                    source={newUnitEnglish}
+                    value={newUnitPhonetic}
+                    issues={newUnitPhoneticReview}
+                    onChange={setNewUnitPhonetic}
+                    onIssuesChange={setNewUnitPhoneticReview}
+                  />
                 </div>
               </div>
 
@@ -1447,9 +1800,9 @@ export default function EnglishReadingApp() {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg"
                 >
                   <option value="">なし</option>
-                  {folders.map((folder) => (
+                  {getFolderOptions().map(({ folder, depth }) => (
                     <option key={folder.id} value={folder.id}>
-                      {folder.name}
+                      {`${"　".repeat(depth)}${depth > 0 ? "└ " : ""}${folder.name}`}
                     </option>
                   ))}
                 </select>
@@ -1457,9 +1810,30 @@ export default function EnglishReadingApp() {
 
               <div className="space-y-3">
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">
-                    英文
-                  </label>
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <label className="text-xs font-medium text-gray-600">
+                      英文
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        generateBothUnitFields(
+                          editUnitEnglish,
+                          editUnitJapanese,
+                          editUnitPhonetic,
+                          setEditUnitJapanese,
+                          setEditUnitPhonetic,
+                          setEditUnitPhoneticReview,
+                        )
+                      }
+                      disabled={generatingUnitField !== null}
+                      className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {generatingUnitField === "both"
+                        ? "生成中..."
+                        : "和訳＋発音をAI生成"}
+                    </button>
+                  </div>
                   <textarea
                     value={editUnitEnglish}
                     onChange={(e) => {
@@ -1471,15 +1845,10 @@ export default function EnglishReadingApp() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">
-                    和訳
-                  </label>
-                  <textarea
-                    value={editUnitJapanese}
-                    onChange={(e) => setEditUnitJapanese(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
-                  />
-                  <div className="mt-2 flex justify-end">
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <label className="text-xs font-medium text-gray-600">
+                      和訳
+                    </label>
                     <button
                       type="button"
                       onClick={() =>
@@ -1498,20 +1867,18 @@ export default function EnglishReadingApp() {
                         : "AIで生成"}
                     </button>
                   </div>
+                  <textarea
+                    value={editUnitJapanese}
+                    onChange={(e) => setEditUnitJapanese(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
+                  />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">
-                    発音記号
-                  </label>
-                  <PhoneticEditor
-                    source={editUnitEnglish}
-                    value={editUnitPhonetic}
-                    issues={editUnitPhoneticReview}
-                    onChange={setEditUnitPhonetic}
-                    onIssuesChange={setEditUnitPhoneticReview}
-                  />
-                  <div className="mt-2 flex justify-end">
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <label className="text-xs font-medium text-gray-600">
+                      発音記号
+                    </label>
                     <button
                       type="button"
                       onClick={() =>
@@ -1531,6 +1898,13 @@ export default function EnglishReadingApp() {
                         : "AIで生成"}
                     </button>
                   </div>
+                  <PhoneticEditor
+                    source={editUnitEnglish}
+                    value={editUnitPhonetic}
+                    issues={editUnitPhoneticReview}
+                    onChange={setEditUnitPhonetic}
+                    onIssuesChange={setEditUnitPhoneticReview}
+                  />
                 </div>
               </div>
 
@@ -2470,9 +2844,9 @@ export default function EnglishReadingApp() {
                    className="px-3 py-2 border border-gray-300 rounded-lg"
                 >
                   <option value="">すべてのフォルダー</option>
-                  {folders.map((folder) => (
+                  {getFolderOptions().map(({ folder, depth }) => (
                     <option key={folder.id} value={folder.id}>
-                      {folder.name}
+                      {`${"　".repeat(depth)}${depth > 0 ? "└ " : ""}${folder.name}`}
                     </option>
                   ))}
                  </select>
