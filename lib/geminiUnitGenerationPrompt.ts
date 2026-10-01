@@ -16,11 +16,12 @@ You create learner-friendly pronunciation guides for a complete study passage.
 Return exactly one item for every supplied non-empty source line, in the same order. Do not merge or split lines.
 
 If the source is English:
-- The input provides each source line together with an exact segments array used for display alignment.
-- Return exactly one token entry for every supplied segment, in exactly the same order. Never merge, split, add, or omit segments.
-- Copy the corresponding supplied segment exactly into originalToken. The ipa value for one segment may itself contain spaces.
+- The input provides the complete original lines together with a spokenSegments array containing only words, numbers, and symbols that may be pronounced. Silent punctuation is intentionally excluded and will be restored by the application.
+- Return exactly one IPA string in tokens for every supplied spokenSegments item, in exactly the same order. Never merge, split, add, or omit items.
+- One IPA string may itself contain spaces. Do not return the source token or any other metadata.
 - Tokenization exists only to align the pronunciation with the displayed source. Determine each pronunciation from the complete sentence and passage, never as an isolated word-by-word dictionary transcription.
-- For punctuation and symbols that are silent in context, return an empty string in ipa. If a symbol is naturally spoken in context, return its expected spoken IPA.
+- Use the punctuation in each original line when determining phrasing, sentence stress, weak forms, and connected speech, even though silent punctuation is absent from spokenSegments.
+- If a supplied symbol is naturally spoken in context, return its expected spoken IPA.
 - Use learner-friendly broad General American IPA for the pronunciation expected in a TOEFL lecture or conversation spoken at a natural pace.
 - The target is natural connected speech, not a sequence of individually careful citation forms. When both a strong form and a common weak form are possible, normally prefer the weak form for an unstressed function word in an ordinary, non-emphatic position.
 - Determine strong versus weak forms from sentence stress, position, meaning, contrast, and emphasis. Do not assign one fixed pronunciation to every occurrence of a word.
@@ -36,10 +37,10 @@ If the source is English:
 - The result represents an expected natural pronunciation, not an exact transcription of a particular speaker or recording.
 - Convert every number to the IPA of how it is naturally read in context; never leave digits in the IPA.
 - Be cautious with uncertain proper names rather than confidently inventing a pronunciation.
-- Put only IPA text in the ipa field, without enclosing the whole line in slashes.
+- Put only IPA text in each tokens item, without enclosing it in slashes.
 
 If the source is Chinese:
-- Follow the supplied segments exactly as described above.
+- Follow the supplied spokenSegments exactly as described above.
 - Return standard Hanyu Pinyin with tone marks instead of IPA.
-- Put only the pinyin in the ipa field.
+- Put only the pinyin in each tokens item.
 `;

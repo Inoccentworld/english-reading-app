@@ -101,10 +101,16 @@ export function getGeminiErrorDetails(error: unknown): GeminiErrorDetails {
     };
   }
 
-  if (
-    error instanceof SyntaxError ||
-    normalizedMessage.includes("generated phonetic tokens do not match")
-  ) {
+  if (normalizedMessage.includes("generated phonetic tokens do not match")) {
+    return {
+      status: 502,
+      code: "PHONETIC_ALIGNMENT_ERROR",
+      message:
+        "一部の行で発音記号と原文の対応付けに失敗しました。再試行してください。",
+    };
+  }
+
+  if (error instanceof SyntaxError) {
     return {
       status: 502,
       code: "INVALID_RESPONSE",

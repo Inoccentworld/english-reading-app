@@ -4,7 +4,11 @@ import {
   GEMINI_UNIT_PHONETIC_PROMPT,
   GEMINI_UNIT_TRANSLATION_PROMPT,
 } from "@/lib/geminiUnitGenerationPrompt";
-import { getSpokenSegments } from "@/lib/pronunciationSegments";
+import {
+  getPronounceableSegments,
+  getSpokenSegments,
+  isPronounceableSegment,
+} from "@/lib/pronunciationSegments";
 import {
   GEMINI_REQUEST_TIMEOUT_MS,
   getGeminiErrorStatus,
@@ -20,12 +24,9 @@ type GenerationRequest = {
 };
 
 type GeneratedSentence = {
-  original: string;
+  original?: string;
   translation?: string;
-  tokens?: {
-    originalToken: string;
-    ipa: string;
-  }[];
+  tokens?: string[];
 };
 
 const MAX_SOURCE_LENGTH = 50000;
@@ -68,18 +69,9 @@ export async function POST(request: Request) {
             translation: { type: "string" },
           }
         : {
-            original: { type: "string" },
             tokens: {
               type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  originalToken: { type: "string" },
-                  ipa: { type: "string" },
-                },
-                required: ["originalToken", "ipa"],
-                additionalProperties: false,
-              },
+              items: { type: "string" },
             },
           };
     const responseJsonSchema = {
@@ -95,7 +87,7 @@ export async function POST(request: Request) {
             required:
               mode === "translation"
                 ? ["original", "translation"]
-                : ["original", "tokens"],
+                : ["tokens"],
             additionalProperties: false,
           },
         },
@@ -108,7 +100,11 @@ export async function POST(request: Request) {
       lines: nonEmptyLines.map((line) => ({
         original: line,
         ...(mode === "phonetic"
-          ? { segments: getSpokenSegments(line).map((segment) => segment.text) }
+          ? {
+              spokenSegments: getPronounceableSegments(line).map(
+                (segment) => segment.text,
+              ),
+            }
           : {}),
       })),
     });
@@ -171,12 +167,22 @@ export async function POST(request: Request) {
           return sentence?.translation?.trim() ?? "";
         }
 
-        const expectedTokens = getSpokenSegments(line);
+        const displaySegments = getSpokenSegments(line);
+        const expectedTokens = getPronounceableSegments(line);
         const generatedTokens = sentence?.tokens;
         if (generatedTokens?.length !== expectedTokens.length) {
-          throw new Error("Generated phonetic tokens do not match the source");
+          throw new Error(
+            `Generated phonetic tokens do not match the source at line ${generatedIndex} (expected ${expectedTokens.length}, received ${generatedTokens?.length ?? 0})`,
+          );
         }
-        return generatedTokens.map((token) => token.ipa.trim()).join(" | ");
+        let generatedTokenIndex = 0;
+        return displaySegments
+          .map((segment) =>
+            isPronounceableSegment(segment)
+              ? (generatedTokens[generatedTokenIndex++] ?? "").trim()
+              : "",
+          )
+          .join(" | ");
       })
       .join("\n");
 

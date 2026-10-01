@@ -16,3 +16,12 @@ export const segmentPronunciationLine = (
 
 export const getSpokenSegments = (line: string) =>
   segmentPronunciationLine(line).filter((segment) => !segment.isWhitespace);
+
+const SPOKEN_SYMBOLS = new Set(["&", "+", "=", "$", "£", "€", "¥", "@", "#", "%"]);
+
+export const isPronounceableSegment = (segment: PronunciationSegment) =>
+  !segment.isWhitespace &&
+  (/\p{L}|\p{N}/u.test(segment.text) || SPOKEN_SYMBOLS.has(segment.text));
+
+export const getPronounceableSegments = (line: string) =>
+  segmentPronunciationLine(line).filter(isPronounceableSegment);
