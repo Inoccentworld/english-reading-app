@@ -29,6 +29,12 @@ type GeneratedSentence = {
   tokens?: string[];
 };
 
+type PhoneticReviewIssue = {
+  lineIndex: number;
+  expectedCount: number;
+  tokens: string[];
+};
+
 const MAX_SOURCE_LENGTH = 50000;
 const PRIMARY_MODEL = "gemini-3.6-flash";
 const FALLBACK_MODEL = "gemini-3.5-flash-lite";
@@ -153,14 +159,19 @@ export async function POST(request: Request) {
     const parsed = JSON.parse(responseText) as {
       sentences?: GeneratedSentence[];
     };
-    if (parsed.sentences?.length !== nonEmptyLines.length) {
+    if (
+      mode === "translation" &&
+      parsed.sentences?.length !== nonEmptyLines.length
+    ) {
       return NextResponse.json(
         { error: "生成結果の行数が原文と一致しませんでした。もう一度お試しください" },
         { status: 502 },
       );
     }
 
-    if (mode === "phonetic" && parsed.sentences) {
+    parsed.sentences ??= [];
+
+    if (mode === "phonetic") {
       for (let index = 0; index < nonEmptyLines.length; index += 1) {
         const line = nonEmptyLines[index];
         const expectedTokenCount = getPronounceableSegments(line).length;
@@ -204,29 +215,39 @@ export async function POST(request: Request) {
             },
           ],
         });
-        const repairResponse = await ai.models.generateContent({
-          model: activeModel,
-          contents: repairPassage,
-          config: {
-            systemInstruction: GEMINI_UNIT_PHONETIC_PROMPT,
-            responseMimeType: "application/json",
-            responseJsonSchema: repairSchema,
-          },
-        });
-        const repairText = repairResponse.text?.trim();
-        if (!repairText) {
-          throw new Error("Gemini returned an empty phonetic repair response");
+        try {
+          const repairResponse = await ai.models.generateContent({
+            model: activeModel,
+            contents: repairPassage,
+            config: {
+              systemInstruction: GEMINI_UNIT_PHONETIC_PROMPT,
+              responseMimeType: "application/json",
+              responseJsonSchema: repairSchema,
+            },
+          });
+          const repairText = repairResponse.text?.trim();
+          if (repairText) {
+            const repaired = JSON.parse(repairText) as {
+              sentences?: GeneratedSentence[];
+            };
+            const repairedSentence = repaired.sentences?.[0];
+            if (repairedSentence?.tokens) {
+              parsed.sentences[index] = repairedSentence;
+            }
+          }
+        } catch (repairError) {
+          console.warn(
+            `Gemini phonetic alignment repair failed at line ${index + 1}; returning the original draft`,
+            repairError,
+          );
         }
-        const repaired = JSON.parse(repairText) as {
-          sentences?: GeneratedSentence[];
-        };
-        parsed.sentences[index] = repaired.sentences?.[0] ?? {};
       }
     }
 
     let generatedIndex = 0;
+    const reviewIssues: PhoneticReviewIssue[] = [];
     const generatedText = sourceLines
-      .map((line) => {
+      .map((line, sourceLineIndex) => {
         if (!line.trim()) return "";
         const sentence = parsed.sentences?.[generatedIndex++];
         if (mode === "translation") {
@@ -235,11 +256,13 @@ export async function POST(request: Request) {
 
         const displaySegments = getSpokenSegments(line);
         const expectedTokens = getPronounceableSegments(line);
-        const generatedTokens = sentence?.tokens;
-        if (generatedTokens?.length !== expectedTokens.length) {
-          throw new Error(
-            `Generated phonetic tokens do not match the source at line ${generatedIndex} (expected ${expectedTokens.length}, received ${generatedTokens?.length ?? 0})`,
-          );
+        const generatedTokens = sentence?.tokens ?? [];
+        if (generatedTokens.length !== expectedTokens.length) {
+          reviewIssues.push({
+            lineIndex: sourceLineIndex,
+            expectedCount: expectedTokens.length,
+            tokens: generatedTokens,
+          });
         }
         let generatedTokenIndex = 0;
         return displaySegments
@@ -252,7 +275,10 @@ export async function POST(request: Request) {
       })
       .join("\n");
 
-    return NextResponse.json({ text: generatedText });
+    return NextResponse.json({
+      text: generatedText,
+      phoneticReview: mode === "phonetic" ? reviewIssues : undefined,
+    });
   } catch (error) {
     console.error("Gemini unit text generation error", error);
     const details = getGeminiErrorDetails(error);

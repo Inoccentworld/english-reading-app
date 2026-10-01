@@ -15,7 +15,10 @@ import {
   Save,
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
-import { segmentPronunciationLine } from "@/lib/pronunciationSegments";
+import {
+  isPronounceableSegment,
+  segmentPronunciationLine,
+} from "@/lib/pronunciationSegments";
 
 // === 型定義 ==============================
 type FolderType = {
@@ -73,6 +76,209 @@ type DictionaryEntry = {
   example: string;
 };
 
+type PhoneticReviewIssue = {
+  lineIndex: number;
+  expectedCount: number;
+  tokens: string[];
+};
+
+type PhoneticEditorProps = {
+  source: string;
+  value: string;
+  issues: PhoneticReviewIssue[];
+  onChange: (value: string) => void;
+  onIssuesChange: (issues: PhoneticReviewIssue[]) => void;
+};
+
+const PhoneticEditor = ({
+  source,
+  value,
+  issues,
+  onChange,
+  onIssuesChange,
+}: PhoneticEditorProps) => {
+  const sourceLines = source.split("\n");
+  const phoneticLines = value.split("\n");
+
+  const updateIssue = (issue: PhoneticReviewIssue, tokens: string[]) => {
+    onIssuesChange(
+      issues.map((item) =>
+        item.lineIndex === issue.lineIndex ? { ...item, tokens } : item,
+      ),
+    );
+    const segments = segmentPronunciationLine(sourceLines[issue.lineIndex] ?? "");
+    let tokenIndex = 0;
+    const phoneticLine = segments
+      .filter((segment) => !segment.isWhitespace)
+      .map((segment) =>
+        isPronounceableSegment(segment)
+          ? (tokens[tokenIndex++] ?? "").trim()
+          : "",
+      )
+      .join(" | ");
+    const nextLines = [...phoneticLines];
+    while (nextLines.length < sourceLines.length) nextLines.push("");
+    nextLines[issue.lineIndex] = phoneticLine;
+    onChange(nextLines.join("\n"));
+  };
+
+  return (
+    <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3">
+      {sourceLines.map((line, lineIndex) => {
+        if (!line.trim()) return null;
+        const segments = segmentPronunciationLine(line);
+        const displaySegments = segments.filter(
+          (segment) => !segment.isWhitespace,
+        );
+        const issue = issues.find((item) => item.lineIndex === lineIndex);
+        const phoneticLine = phoneticLines[lineIndex] ?? "";
+        const phoneticTokens = phoneticLine.includes("|")
+          ? phoneticLine.split(/\s*\|\s*/)
+          : [];
+        const legacyEnglishWords = line.trim().split(/\s+/);
+        const legacyPhoneticWords = phoneticLine.trim().split(/\s+/);
+        const canAlignLegacy =
+          !phoneticLine.includes("|") &&
+          Boolean(phoneticLine.trim()) &&
+          legacyEnglishWords.length === legacyPhoneticWords.length;
+
+        if (issue) {
+          let pronounceableIndex = 0;
+          return (
+            <div
+              key={`phonetic-review-${lineIndex}`}
+              className="rounded-lg border border-amber-300 bg-amber-50 p-3"
+            >
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-800">
+                <span className="font-medium">
+                  要確認：原文 {issue.expectedCount}枠／IPA {issue.tokens.length}個
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onIssuesChange(
+                      issues.filter((item) => item.lineIndex !== lineIndex),
+                    )
+                  }
+                  className="rounded border border-amber-400 bg-white px-2 py-1 hover:bg-amber-100"
+                >
+                  確認済み
+                </button>
+              </div>
+              <div className="flex flex-wrap items-end gap-x-2 gap-y-3">
+                {displaySegments.map((segment, segmentIndex) => {
+                  if (!isPronounceableSegment(segment)) {
+                    return (
+                      <span key={`punctuation-${segmentIndex}`}>
+                        {segment.text}
+                      </span>
+                    );
+                  }
+                  const tokenIndex = pronounceableIndex++;
+                  return (
+                    <label
+                      key={`phonetic-input-${segmentIndex}`}
+                      className="flex max-w-36 flex-col items-center gap-1"
+                    >
+                      <input
+                        type="text"
+                        value={issue.tokens[tokenIndex] ?? ""}
+                        onChange={(event) => {
+                          const nextTokens = [...issue.tokens];
+                          while (nextTokens.length < issue.expectedCount) {
+                            nextTokens.push("");
+                          }
+                          nextTokens[tokenIndex] = event.target.value;
+                          updateIssue(issue, nextTokens);
+                        }}
+                        aria-label={`${segment.text}の発音記号`}
+                        className="w-full min-w-20 rounded border border-amber-300 bg-white px-1.5 py-1 text-center text-xs text-gray-600"
+                      />
+                      <span className="whitespace-nowrap text-base text-gray-900">
+                        {segment.text}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              {issue.tokens.length > issue.expectedCount && (
+                <div className="mt-3 border-t border-amber-200 pt-2">
+                  <div className="mb-1 text-xs font-medium text-amber-800">
+                    未割り当てIPA（必要な欄へコピーしてください）
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {issue.tokens
+                      .slice(issue.expectedCount)
+                      .map((token, extraIndex) => (
+                        <input
+                          key={`extra-${extraIndex}`}
+                          type="text"
+                          value={token}
+                          readOnly
+                          onFocus={(event) => event.currentTarget.select()}
+                          className="min-w-24 rounded border border-amber-300 bg-white px-2 py-1 text-xs text-gray-600"
+                        />
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        }
+
+        if (canAlignLegacy) {
+          return (
+            <div
+              key={`phonetic-preview-${lineIndex}`}
+              className="flex flex-wrap items-end gap-x-2 gap-y-1 border-b border-gray-200 py-2 text-base leading-tight last:border-0"
+            >
+              {legacyEnglishWords.map((word, wordIndex) => (
+                <ruby
+                  key={`legacy-${wordIndex}`}
+                  className="whitespace-nowrap [ruby-overhang:none]"
+                >
+                  {word}
+                  <rt className="text-xs font-normal text-gray-500">
+                    {legacyPhoneticWords[wordIndex]}
+                  </rt>
+                </ruby>
+              ))}
+            </div>
+          );
+        }
+
+        let phoneticIndex = 0;
+        return (
+          <div
+            key={`phonetic-preview-${lineIndex}`}
+            className="break-words border-b border-gray-200 py-2 text-base leading-tight last:border-0"
+          >
+            {segments.map((segment, segmentIndex) => {
+              if (segment.isWhitespace) {
+                return <span key={segmentIndex}>{segment.text}</span>;
+              }
+              const phonetic = phoneticTokens[phoneticIndex++] ?? "";
+              return phonetic ? (
+                <ruby key={segmentIndex} className="whitespace-nowrap [ruby-overhang:none]">
+                  {segment.text}
+                  <rt className="text-xs font-normal text-gray-500">{phonetic}</rt>
+                </ruby>
+              ) : (
+                <span key={segmentIndex}>{segment.text}</span>
+              );
+            })}
+          </div>
+        );
+      })}
+      {!source.trim() && (
+        <div className="py-4 text-center text-xs text-gray-500">
+          英文を入力すると、ここにルビ表示されます。
+        </div>
+      )}
+    </div>
+  );
+};
+
 const getAiRequestErrorMessage = (error: unknown, fallback: string) => {
   if (error instanceof SyntaxError) {
     return "サーバーから正しい形式の応答を取得できませんでした。再試行してください。";
@@ -102,6 +308,9 @@ export default function EnglishReadingApp() {
   const [newUnitEnglish, setNewUnitEnglish] = useState("");
   const [newUnitJapanese, setNewUnitJapanese] = useState("");
   const [newUnitPhonetic, setNewUnitPhonetic] = useState("");
+  const [newUnitPhoneticReview, setNewUnitPhoneticReview] = useState<
+    PhoneticReviewIssue[]
+  >([]);
   const [newUnitFolder, setNewUnitFolder] = useState("");
 
   // === フラッシュカード関連 ===
@@ -144,6 +353,9 @@ export default function EnglishReadingApp() {
   const [editUnitEnglish, setEditUnitEnglish] = useState("");
   const [editUnitJapanese, setEditUnitJapanese] = useState("");
   const [editUnitPhonetic, setEditUnitPhonetic] = useState("");
+  const [editUnitPhoneticReview, setEditUnitPhoneticReview] = useState<
+    PhoneticReviewIssue[]
+  >([]);
   const [editUnitFolder, setEditUnitFolder] = useState("");
   const [generatingUnitField, setGeneratingUnitField] = useState<
     "translation" | "phonetic" | null
@@ -375,6 +587,7 @@ export default function EnglishReadingApp() {
     source: string,
     currentValue: string,
     setValue: (value: string) => void,
+    setPhoneticReview?: (issues: PhoneticReviewIssue[]) => void,
   ) => {
     if (!source.trim()) {
       alert("先に原文を入力してください");
@@ -394,11 +607,18 @@ export default function EnglishReadingApp() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source, mode }),
       });
-      const data = (await response.json()) as { text?: string; error?: string };
+      const data = (await response.json()) as {
+        text?: string;
+        error?: string;
+        phoneticReview?: PhoneticReviewIssue[];
+      };
       if (!response.ok || !data.text) {
         throw new Error(data.error || "AIから生成結果を取得できませんでした");
       }
       setValue(data.text);
+      if (mode === "phonetic") {
+        setPhoneticReview?.(data.phoneticReview ?? []);
+      }
     } catch (error) {
       alert(getAiRequestErrorMessage(error, "AIによる生成に失敗しました"));
     } finally {
@@ -439,6 +659,7 @@ export default function EnglishReadingApp() {
     setNewUnitEnglish("");
     setNewUnitJapanese("");
     setNewUnitPhonetic("");
+    setNewUnitPhoneticReview([]);
     setNewUnitFolder("");
     setCurrentView("list");
   };
@@ -643,6 +864,7 @@ export default function EnglishReadingApp() {
     setEditUnitEnglish(unit.lines.map((l) => l.english).join("\n"));
     setEditUnitJapanese(unit.lines.map((l) => l.japanese).join("\n"));
     setEditUnitPhonetic(unit.lines.map((l) => l.phonetic).join("\n"));
+    setEditUnitPhoneticReview([]);
     setCurrentView("edit");
   };
 
@@ -1108,7 +1330,10 @@ export default function EnglishReadingApp() {
                   </label>
                   <textarea
                     value={newUnitEnglish}
-                    onChange={(e) => setNewUnitEnglish(e.target.value)}
+                    onChange={(e) => {
+                      setNewUnitEnglish(e.target.value);
+                      setNewUnitPhoneticReview([]);
+                    }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
                   />
                 </div>
@@ -1147,10 +1372,12 @@ export default function EnglishReadingApp() {
                   <label className="block text-xs font-medium text-gray-600 mb-1">
                     発音記号
                   </label>
-                  <textarea
+                  <PhoneticEditor
+                    source={newUnitEnglish}
                     value={newUnitPhonetic}
-                    onChange={(e) => setNewUnitPhonetic(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
+                    issues={newUnitPhoneticReview}
+                    onChange={setNewUnitPhonetic}
+                    onIssuesChange={setNewUnitPhoneticReview}
                   />
                   <div className="mt-2 flex justify-end">
                     <button
@@ -1161,6 +1388,7 @@ export default function EnglishReadingApp() {
                           newUnitEnglish,
                           newUnitPhonetic,
                           setNewUnitPhonetic,
+                          setNewUnitPhoneticReview,
                         )
                       }
                       disabled={generatingUnitField !== null}
@@ -1234,7 +1462,10 @@ export default function EnglishReadingApp() {
                   </label>
                   <textarea
                     value={editUnitEnglish}
-                    onChange={(e) => setEditUnitEnglish(e.target.value)}
+                    onChange={(e) => {
+                      setEditUnitEnglish(e.target.value);
+                      setEditUnitPhoneticReview([]);
+                    }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
                   />
                 </div>
@@ -1273,10 +1504,12 @@ export default function EnglishReadingApp() {
                   <label className="block text-xs font-medium text-gray-600 mb-1">
                     発音記号
                   </label>
-                  <textarea
+                  <PhoneticEditor
+                    source={editUnitEnglish}
                     value={editUnitPhonetic}
-                    onChange={(e) => setEditUnitPhonetic(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
+                    issues={editUnitPhoneticReview}
+                    onChange={setEditUnitPhonetic}
+                    onIssuesChange={setEditUnitPhoneticReview}
                   />
                   <div className="mt-2 flex justify-end">
                     <button
@@ -1287,6 +1520,7 @@ export default function EnglishReadingApp() {
                           editUnitEnglish,
                           editUnitPhonetic,
                           setEditUnitPhonetic,
+                          setEditUnitPhoneticReview,
                         )
                       }
                       disabled={generatingUnitField !== null}
