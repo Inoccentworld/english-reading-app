@@ -126,6 +126,7 @@ export async function POST(request: Request) {
         },
       });
 
+    let activeModel = PRIMARY_MODEL;
     let response;
     try {
       response = await generate(PRIMARY_MODEL);
@@ -137,6 +138,7 @@ export async function POST(request: Request) {
       console.warn(
         `Gemini ${PRIMARY_MODEL} unavailable or quota exhausted; retrying with ${FALLBACK_MODEL}`,
       );
+      activeModel = FALLBACK_MODEL;
       response = await generate(FALLBACK_MODEL);
     }
 
@@ -156,6 +158,70 @@ export async function POST(request: Request) {
         { error: "生成結果の行数が原文と一致しませんでした。もう一度お試しください" },
         { status: 502 },
       );
+    }
+
+    if (mode === "phonetic" && parsed.sentences) {
+      for (let index = 0; index < nonEmptyLines.length; index += 1) {
+        const line = nonEmptyLines[index];
+        const expectedTokenCount = getPronounceableSegments(line).length;
+        if (parsed.sentences[index]?.tokens?.length === expectedTokenCount) {
+          continue;
+        }
+
+        const repairSchema = {
+          type: "object",
+          properties: {
+            sentences: {
+              type: "array",
+              minItems: 1,
+              maxItems: 1,
+              items: {
+                type: "object",
+                properties: {
+                  tokens: {
+                    type: "array",
+                    minItems: expectedTokenCount,
+                    maxItems: expectedTokenCount,
+                    items: { type: "string" },
+                  },
+                },
+                required: ["tokens"],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["sentences"],
+          additionalProperties: false,
+        };
+        const repairPassage = JSON.stringify({
+          context: source,
+          lines: [
+            {
+              original: line,
+              spokenSegments: getPronounceableSegments(line).map(
+                (segment) => segment.text,
+              ),
+            },
+          ],
+        });
+        const repairResponse = await ai.models.generateContent({
+          model: activeModel,
+          contents: repairPassage,
+          config: {
+            systemInstruction: GEMINI_UNIT_PHONETIC_PROMPT,
+            responseMimeType: "application/json",
+            responseJsonSchema: repairSchema,
+          },
+        });
+        const repairText = repairResponse.text?.trim();
+        if (!repairText) {
+          throw new Error("Gemini returned an empty phonetic repair response");
+        }
+        const repaired = JSON.parse(repairText) as {
+          sentences?: GeneratedSentence[];
+        };
+        parsed.sentences[index] = repaired.sentences?.[0] ?? {};
+      }
     }
 
     let generatedIndex = 0;
