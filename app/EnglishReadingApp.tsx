@@ -665,9 +665,26 @@ export default function EnglishReadingApp() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [timingEditing, setTimingEditing] = useState(false);
   const [playerExpanded, setPlayerExpanded] = useState(false);
+  const playerPanelRef = useRef<HTMLDivElement>(null);
+  const [playerBottomOffset, setPlayerBottomOffset] = useState(0);
   const [timingEditLineId, setTimingEditLineId] = useState<number | null>(null);
   const timingOriginalRef = useRef<UnitAlignment | null>(null);
   const timingOwnerRef = useRef<string | null>(null);
+  const readerAudioUrl = localUnitMedia[selectedUnit?.id ?? ""]?.audioUrl;
+
+  useEffect(() => {
+    const panel = playerPanelRef.current;
+    if (!panel || currentView !== "reader") {
+      setPlayerBottomOffset(0);
+      return;
+    }
+    const measure = () => setPlayerBottomOffset(Math.max(0, window.innerHeight - panel.getBoundingClientRect().top));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    window.addEventListener("resize", measure);
+    return () => { observer.disconnect(); window.removeEventListener("resize", measure); };
+  }, [currentView, selectedUnit?.id, readerAudioUrl, playerExpanded, timingEditing]);
   const playbackFrameRef = useRef<number | null>(null);
   const armedTimedTargetRef = useRef<string | null>(null);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
@@ -2599,11 +2616,7 @@ export default function EnglishReadingApp() {
             : currentView === "reader" ? "mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col" : "mx-auto max-w-7xl"
         }
       >
-        <div className={`flex shrink-0 justify-between items-center ${currentView === "reader" ? "mb-3" : "mb-8"}`}>
-          <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-3">
-            <BookOpen size={36} className="text-blue-600" />
-            長文学習
-          </h1>
+        <div className={`flex shrink-0 justify-end items-center ${currentView === "reader" ? "mb-3" : "mb-8"}`}>
 
           <nav className="flex gap-2">
             <button
@@ -2648,7 +2661,7 @@ export default function EnglishReadingApp() {
           <div className="space-y-4">
             <div className="flex justify-between items-center">
               <h2 className="text-2xl font-bold text-gray-800">
-                学習ユニット一覧
+                ユニット一覧
               </h2>
               <button
                 onClick={() => {
@@ -3739,7 +3752,7 @@ export default function EnglishReadingApp() {
                   onPause={() => setIsAudioPlaying(false)}
                   onEnded={() => setIsAudioPlaying(false)}
                 />
-                <div className="z-30 max-h-[55dvh] shrink-0 overflow-y-auto rounded-b-lg border-t border-gray-200 bg-white shadow-md">
+                <div ref={playerPanelRef} className="z-30 max-h-[55dvh] shrink-0 overflow-y-auto rounded-b-lg border-t border-gray-200 bg-white shadow-md">
                   <div className="px-3 py-1">
                     <div className="flex items-center justify-center gap-3">
                       {!playerExpanded && <button type="button" aria-label={isAudioPlaying ? "停止" : "再生"}
@@ -4469,7 +4482,8 @@ export default function EnglishReadingApp() {
                 </aside>
               )}
               <div
-                className={`fixed bottom-3 z-50 flex flex-col gap-2 transition-[right] ${
+                style={{ bottom: playerBottomOffset + 12 }}
+                className={`fixed z-50 flex flex-col gap-2 transition-[right,bottom] duration-200 ${
                   hasReaderSidePanel
                     ? "right-3 lg:right-[calc(46vw+0.75rem)] xl:right-[calc(42vw+0.75rem)]"
                     : "right-3"
