@@ -9,10 +9,14 @@ import React, {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import TimingEditor from "./TimingEditor";
+import VocabularyScope, { type ScopeItem } from "./VocabularyScope";
 import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
+  BookMarked,
+  PanelLeftOpen,
+  PanelLeftClose,
   CornerDownLeft,
   CornerUpRight,
   Pause,
@@ -28,8 +32,8 @@ import {
   MoreVertical,
   Save,
   ChevronDown,
-  ChevronUp,
   ChevronLeft,
+  ChevronUp,
   ChevronRight,
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
@@ -62,7 +66,9 @@ type LibraryItemRef = {
   id: string;
 };
 
-type LibraryContextMenu = LibraryItemRef & {
+type LibraryContextMenu = {
+  type: "unit" | "folder" | "blank";
+  id: string;
   x: number;
   y: number;
 };
@@ -569,6 +575,14 @@ export default function EnglishReadingApp() {
   const [libraryDropTarget, setLibraryDropTarget] = useState<string | null>(
     null,
   );
+  const dragNavigationRef = useRef<{ key: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const clearDragNavigation = () => {
+    if (dragNavigationRef.current) clearTimeout(dragNavigationRef.current.timer);
+    dragNavigationRef.current = null;
+  };
+  useEffect(() => () => {
+    if (dragNavigationRef.current) clearTimeout(dragNavigationRef.current.timer);
+  }, []);
   const [selectedLibraryItem, setSelectedLibraryItem] =
     useState<LibraryItemRef | null>(null);
   const [libraryContextMenu, setLibraryContextMenu] =
@@ -630,7 +644,7 @@ export default function EnglishReadingApp() {
   const [showVocabularyQuickView, setShowVocabularyQuickView] = useState(false);
   const [quickVocabularySearch, setQuickVocabularySearch] = useState("");
   const [vocabFolder, setVocabFolder] = useState("");
-  const [vocabUnit, setVocabUnit] = useState("");
+  const [vocabSelection, setVocabSelection] = useState<ScopeItem[]>([]);
   const [vocabularyMenuId, setVocabularyMenuId] = useState<string | null>(null);
   const [editingVocabulary, setEditingVocabulary] =
     useState<VocabularyType | null>(null);
@@ -1425,7 +1439,7 @@ export default function EnglishReadingApp() {
     if (direction < 0) {
       const currentStart = starts[Math.max(currentIndex, 0)];
       targetIndex =
-        currentIndex > 0 && timeMs - currentStart < 500
+        currentIndex > 0 && timeMs - currentStart < (kind === "line" ? 2000 : 500)
           ? currentIndex - 1
           : Math.max(currentIndex, 0);
     } else {
@@ -1890,6 +1904,32 @@ export default function EnglishReadingApp() {
   const getFolderChildren = (parentId: string | null) =>
     folders.filter((folder) => (folder.parent_id ?? null) === parentId);
 
+  const getFolderPath = (folderId: string | null | undefined) => {
+    const names: string[] = [];
+    const visited = new Set<string>();
+    let currentId = folderId;
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const folder = folders.find((item) => item.id === currentId);
+      if (!folder) break;
+      names.unshift(folder.name);
+      currentId = folder.parent_id;
+    }
+    return names.length ? names.join(" / ") : "最上位";
+  };
+
+  const libraryMenuButton = (item: LibraryItemRef, name: string) => <button
+    type="button" aria-label={`${name}の操作メニュー`}
+    onClick={(event) => {
+      event.stopPropagation(); cancelPendingLibraryRename();
+      const rect = event.currentTarget.getBoundingClientRect();
+      setSelectedLibraryItem(item);
+      setLibraryContextMenu({ ...item, x: Math.max(0, Math.min(rect.right - 176, window.innerWidth - 180)), y: Math.max(0, Math.min(rect.bottom, window.innerHeight - 210)) });
+    }}
+    onDoubleClick={(event) => event.stopPropagation()}
+    className="ml-1 shrink-0 rounded p-1 text-gray-500 hover:bg-gray-100"
+  ><MoreVertical size={18} /></button>;
+
   const getDescendantFolderIds = (folderId: string) => {
     const descendants = new Set<string>();
     const pending = [folderId];
@@ -1927,6 +1967,7 @@ export default function EnglishReadingApp() {
   };
 
   const moveLibraryItem = async (targetFolderId: string | null) => {
+    clearDragNavigation();
     const dragged = draggedLibraryItem;
     setLibraryDropTarget(null);
     setDraggedLibraryItem(null);
@@ -2099,6 +2140,19 @@ export default function EnglishReadingApp() {
     libraryContentsRef.current?.focus();
   };
 
+  const hoverDragFolder = (targetId: string | null, key: string) => {
+    if (!draggedLibraryItem) return;
+    if (draggedLibraryItem.type === "folder" && (targetId === draggedLibraryItem.id || (targetId && getDescendantFolderIds(draggedLibraryItem.id).has(targetId)))) return;
+    setLibraryDropTarget(key);
+    if (dragNavigationRef.current?.key === key) return;
+    clearDragNavigation();
+    dragNavigationRef.current = { key, timer: setTimeout(() => {
+      dragNavigationRef.current = null;
+      setLibraryDropTarget(null);
+      openLibraryFolder(targetId);
+    }, 800) };
+  };
+
   const handleTreeKeyboard = (event: React.KeyboardEvent) => {
     if ((event.target as HTMLElement).closest("input, textarea, select")) return;
     const visible: FolderType[] = [];
@@ -2222,8 +2276,9 @@ export default function EnglishReadingApp() {
               event.preventDefault();
               event.stopPropagation();
               event.dataTransfer.dropEffect = "move";
-              setLibraryDropTarget(`folder:${folder.id}`);
+              hoverDragFolder(folder.id, `folder:${folder.id}`);
             }}
+            onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) { clearDragNavigation(); setLibraryDropTarget(null); } }}
             onDrop={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -2462,17 +2517,17 @@ export default function EnglishReadingApp() {
     }
     setVocabularyMenuId(null);
   };
-  const vocabUnits = vocabFolder
-    ? units.filter((u) => u.folder_id === vocabFolder)
-    : units;
-
-  const filteredVocabulary = vocabUnit
-    ? vocabulary.filter((v) => v.unit_id === vocabUnit)
-    : vocabFolder
-      ? vocabulary.filter((v) =>
-          units.some((u) => u.id === v.unit_id && u.folder_id === vocabFolder),
-        )
-      : vocabulary;
+  const scopedFolders = new Set<string>();
+  const scopedUnitIds = new Set<string>();
+  const includeFolder = (id: string) => {
+    scopedFolders.add(id);
+    getDescendantFolderIds(id).forEach((child) => scopedFolders.add(child));
+  };
+  if (vocabSelection.length) vocabSelection.forEach((item) => item.type === "folder" ? includeFolder(item.id) : scopedUnitIds.add(item.id));
+  else if (vocabFolder) includeFolder(vocabFolder);
+  const scopedUnits = units.filter((unit) => (!vocabFolder && !vocabSelection.length) || scopedUnitIds.has(unit.id) || (unit.folder_id && scopedFolders.has(unit.folder_id)));
+  const allowedUnitIds = new Set(scopedUnits.map((unit) => unit.id));
+  const filteredVocabulary = vocabulary.filter((item) => allowedUnitIds.has(item.unit_id));
   const quickVocabularyQuery = quickVocabularySearch.trim().toLocaleLowerCase();
   const quickVocabulary = selectedUnit
     ? vocabulary.filter(
@@ -2490,11 +2545,7 @@ export default function EnglishReadingApp() {
     const sanitizeFileName = (value: string) =>
       value.replace(/[\\/:*?"<>|]/g, "_").replace(/[. ]+$/g, "");
 
-    const targetUnits = vocabUnit
-      ? units.filter((unit) => unit.id === vocabUnit)
-      : vocabFolder
-        ? units.filter((unit) => unit.folder_id === vocabFolder)
-        : units;
+    const targetUnits = scopedUnits;
 
     targetUnits.forEach((unit) => {
       const unitVocabulary = filteredVocabulary.filter(
@@ -2608,17 +2659,17 @@ export default function EnglishReadingApp() {
 
   // === ここからUI部分 ===
   return (
-    <div className={`${currentView === "reader" ? "flex h-dvh flex-col overflow-hidden" : "min-h-screen"} bg-gradient-to-br from-blue-50 to-indigo-100 p-6`}>
+    <div onDragEnd={() => { clearDragNavigation(); setDraggedLibraryItem(null); setLibraryDropTarget(null); }} className={`${currentView === "reader" ? "flex h-dvh flex-col overflow-hidden" : "min-h-screen"} bg-gradient-to-br from-blue-50 to-indigo-100 ${currentView === "list" ? "p-0" : currentView === "vocabulary" ? "px-3 py-2 sm:px-6" : "p-6"}`}>
       <div
         className={
           currentView === "reader" && hasReaderSidePanel
             ? "mx-auto flex min-h-0 w-full max-w-none flex-1 flex-col"
-            : currentView === "reader" ? "mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col" : "mx-auto max-w-7xl"
+            : currentView === "reader" ? "mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col" : currentView === "list" ? "w-full" : "mx-auto max-w-7xl"
         }
       >
-        <div className={`flex shrink-0 justify-end items-center ${currentView === "reader" ? "mb-3" : "mb-8"}`}>
+        <div className={`flex shrink-0 justify-end items-center ${currentView === "reader" ? "mb-3" : currentView === "list" || currentView === "vocabulary" ? "mb-1" : "mb-8"}`}>
 
-          <nav className="flex gap-2">
+          <nav aria-label="画面切り替え" className={`flex flex-wrap justify-end gap-2 ${currentView === "list" ? "px-2 pt-2" : ""}`}>
             <button
               onClick={() => {
                 if (currentView === "reader") {
@@ -2631,26 +2682,28 @@ export default function EnglishReadingApp() {
                 }
                 setCurrentView("list");
               }}
-              className={`px-4 py-2 rounded-lg ${
+              aria-current={currentView === "list" ? "page" : undefined}
+              className={`flex items-center gap-1.5 border px-3 py-1.5 text-sm font-medium rounded-lg ${
                 currentView === "list"
-                  ? "bg-blue-600 text-white"
-                  : "bg-white text-gray-700 hover:bg-gray-50"
+                  ? "border-blue-600 bg-blue-600 text-white"
+                  : "border-gray-300 bg-white text-gray-800 hover:bg-gray-50"
               }`}
             >
-              ユニット一覧
+              <List size={18} />ユニット一覧
             </button>
             <button
               onClick={() => {
                 if (currentView === "edit" && !cancelUnitEdit()) return;
                 setCurrentView("vocabulary");
               }}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
+              aria-current={currentView === "vocabulary" ? "page" : undefined}
+              className={`flex items-center gap-1.5 border px-3 py-1.5 text-sm font-medium rounded-lg ${
                 currentView === "vocabulary"
-                  ? "bg-blue-600 text-white"
-                  : "bg-white text-gray-700 hover:bg-gray-50"
+                  ? "border-blue-600 bg-blue-600 text-white"
+                  : "border-gray-300 bg-white text-gray-800 hover:bg-gray-50"
               }`}
             >
-              <List size={20} />
+              <BookMarked size={18} />
               単語帳
             </button>
           </nav>
@@ -2658,75 +2711,46 @@ export default function EnglishReadingApp() {
 
         {/* === ユニット一覧 === */}
         {currentView === "list" && (
-          <div className="space-y-4">
-            <div className="flex justify-between items-center">
-              <h2 className="text-2xl font-bold text-gray-800">
-                ユニット一覧
-              </h2>
+          <div className="space-y-1">
+            <div className="flex items-center gap-1">
+              <button title="フォルダー一覧を開閉" aria-label="フォルダー一覧を開閉" aria-expanded={!isFolderSidebarCollapsed} onClick={() => setIsFolderSidebarCollapsed((value) => !value)} className="rounded p-2 text-gray-600 hover:bg-white">{isFolderSidebarCollapsed ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}</button>
+              <button title="新規フォルダー" aria-label="新規フォルダー" onClick={() => setShowFolderInput((value) => !value)} className="rounded p-2 text-gray-600 hover:bg-white"><FolderPlus size={20} /></button>
               <button
                 onClick={() => {
                   setNewUnitFolder(selectedFolder ?? "");
                   setCurrentView("add");
                 }}
-                className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
+                title="新規ユニット" aria-label="新規ユニット"
+                className="rounded p-2 text-gray-600 hover:bg-white"
               >
                 <Plus size={20} />
-                新規ユニット追加
               </button>
             </div>
-            <div className={`grid items-start gap-2 sm:gap-4 ${
+            {showFolderInput && <div className="flex gap-2">
+              <input autoFocus aria-label="新規フォルダー名" placeholder="フォルダー名" value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void addFolder(); }} className="min-w-0 rounded border bg-white px-2 py-1 text-sm" />
+              <button onClick={addFolder} className="rounded bg-blue-600 px-3 py-1 text-sm text-white">作成</button>
+              <button onClick={() => setShowFolderInput(false)} aria-label="フォルダー作成をキャンセル"><X size={18} /></button>
+            </div>}
+            <div className={`grid items-start gap-0 ${
               isFolderSidebarCollapsed
-                ? "grid-cols-[36px_minmax(0,1fr)]"
+                ? "grid-cols-1"
                 : "grid-cols-[140px_minmax(0,1fr)] sm:grid-cols-[220px_minmax(0,1fr)]"
             }`}>
               <aside
                 ref={folderTreeRef}
                 tabIndex={0}
                 onKeyDown={handleTreeKeyboard}
-                className="sticky top-4 min-w-0 rounded-lg bg-white p-2 shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-300"
+                className={`${isFolderSidebarCollapsed ? "hidden" : "block"} sticky top-0 min-w-0 border-r border-gray-200 bg-white p-2 focus:outline-none focus:ring-1 focus:ring-blue-300`}
                 aria-label="フォルダー一覧"
               >
-                <button
-                  type="button"
-                  title={isFolderSidebarCollapsed ? "フォルダー一覧を展開" : "フォルダー一覧を折りたたむ"}
-                  aria-expanded={!isFolderSidebarCollapsed}
-                  onClick={() => setIsFolderSidebarCollapsed((current) => !current)}
-                  className="mb-2 rounded p-1 text-gray-500 hover:bg-gray-100"
-                >
-                  {isFolderSidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-                </button>
                 {!isFolderSidebarCollapsed && <>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="font-semibold text-gray-700 flex items-center gap-2">
                     <Folder size={20} />
                     フォルダー
                   </h3>
-                  <button
-                    onClick={() => setShowFolderInput(!showFolderInput)}
-                    className="text-blue-600 hover:text-blue-800"
-                    aria-label="新規フォルダー"
-                  >
-                    <FolderPlus size={18} />
-                  </button>
                 </div>
 
-                {showFolderInput && (
-                  <div className="flex gap-2 mb-3">
-                    <input
-                      type="text"
-                      value={newFolderName}
-                      onChange={(e) => setNewFolderName(e.target.value)}
-                      placeholder="フォルダー名"
-                      className="min-w-0 flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
-                    />
-                    <button
-                      onClick={addFolder}
-                      className="bg-blue-600 text-white px-2 py-1.5 rounded hover:bg-blue-700 text-sm"
-                    >
-                      追加
-                    </button>
-                  </div>
-                )}
 
                 <div className="space-y-1">
                   <div
@@ -2760,13 +2784,20 @@ export default function EnglishReadingApp() {
                 ref={libraryContentsRef}
                 tabIndex={0}
                 aria-label="フォルダーの内容"
+                onContextMenu={(event) => {
+                  if (event.defaultPrevented) return;
+                  event.preventDefault();
+                  setLibraryContextMenu({ type: "blank", id: "", x: Math.min(event.clientX, window.innerWidth - 180), y: Math.min(event.clientY, window.innerHeight - 100) });
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Tab" && event.shiftKey && !isFolderSidebarCollapsed) {
                     event.preventDefault();
                     folderTreeRef.current?.focus();
                   }
                 }}
-                className="min-w-0 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm"
+                className={`min-h-[65vh] min-w-0 overflow-hidden bg-white ${libraryDropTarget === "contents" ? "ring-2 ring-inset ring-blue-400" : ""}`}
+                onDragOver={(event) => { if (!draggedLibraryItem) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; clearDragNavigation(); setLibraryDropTarget("contents"); }}
+                onDrop={(event) => { if (!draggedLibraryItem) return; event.preventDefault(); void moveLibraryItem(selectedFolder); }}
                 onClick={(event) => {
                   if (event.currentTarget === event.target) {
                     setSelectedLibraryItem(null);
@@ -2778,12 +2809,15 @@ export default function EnglishReadingApp() {
                     <button
                       type="button"
                       title="親フォルダーへ戻る"
+                      onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move"; hoverDragFolder(folders.find((item) => item.id === selectedFolder)?.parent_id ?? null, `parent:${selectedFolder}`); }}
+                      onDragLeave={() => { clearDragNavigation(); setLibraryDropTarget(null); }}
+                      onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void moveLibraryItem(folders.find((item) => item.id === selectedFolder)?.parent_id ?? null); }}
                       onClick={() => {
                         const folder = folders.find((item) => item.id === selectedFolder);
                         openLibraryFolder(folder?.parent_id ?? null);
                         setSelectedLibraryItem({ type: "folder", id: selectedFolder });
                       }}
-                      className="rounded p-1 text-gray-500 hover:bg-gray-100"
+                      className={`rounded p-1 text-gray-500 hover:bg-gray-100 ${libraryDropTarget === `parent:${selectedFolder}` ? "bg-blue-100 ring-2 ring-blue-400" : ""}`}
                     >
                       <ArrowLeft size={16} />
                     </button>
@@ -2792,7 +2826,7 @@ export default function EnglishReadingApp() {
                     </span>
                   </div>
                 )}
-                <div className="grid grid-cols-[minmax(0,1fr)_90px_110px] border-b border-gray-200 bg-gray-50 px-3 text-xs font-medium text-gray-500">
+                <div className="grid grid-cols-[minmax(0,1fr)_90px] border-b border-gray-200 bg-gray-50 px-3 text-xs font-medium text-gray-500">
                   <button
                     type="button"
                     onClick={() => {
@@ -2809,7 +2843,6 @@ export default function EnglishReadingApp() {
                   >
                     名前 {librarySortKey === "name" ? (librarySortDirection === "asc" ? "↑" : "↓") : ""}
                   </button>
-                  <span className="py-2 text-right">行数</span>
                   <button
                     type="button"
                     onClick={() => {
@@ -2852,9 +2885,11 @@ export default function EnglishReadingApp() {
                             event.dataTransfer.effectAllowed = "move";
                             setDraggedLibraryItem({ type: "folder", id: folder.id });
                           }}
-                          onDragOver={(event) => event.preventDefault()}
+                          onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move"; hoverDragFolder(folder.id, `folder:${folder.id}`); }}
+                          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) { clearDragNavigation(); setLibraryDropTarget(null); } }}
                           onDrop={(event) => {
                             event.preventDefault();
+                            event.stopPropagation();
                             void moveLibraryItem(folder.id);
                           }}
                           onClick={(event) => handleLibraryItemClick(event, item, folder.name)}
@@ -2868,8 +2903,8 @@ export default function EnglishReadingApp() {
                             setSelectedLibraryItem(item);
                             setLibraryContextMenu({ ...item, x: event.clientX, y: event.clientY });
                           }}
-                          className={`grid h-10 cursor-default grid-cols-[minmax(0,1fr)_90px_110px] items-center px-3 text-sm ${
-                            selected ? "bg-blue-100 text-blue-950" : "hover:bg-gray-50"
+                          className={`grid h-10 cursor-default grid-cols-[minmax(0,1fr)_90px] items-center px-3 text-sm ${
+                            libraryDropTarget === `folder:${folder.id}` ? "bg-blue-100 ring-2 ring-inset ring-blue-400" : selected ? "bg-blue-100 text-blue-950" : "hover:bg-gray-50"
                           }`}
                         >
                           <div className="flex min-w-0 items-center gap-2">
@@ -2890,11 +2925,11 @@ export default function EnglishReadingApp() {
                               <span className="truncate">{folder.name}</span>
                             )}
                           </div>
-                          <span />
-                          <span className="text-right text-xs text-gray-500">
+                          <span className="flex items-center justify-end text-xs text-gray-500">
                             {folder.created_at
                               ? new Date(folder.created_at).toLocaleDateString("ja-JP")
                               : ""}
+                            {libraryMenuButton(item, folder.name)}
                           </span>
                         </div>
                       );
@@ -2930,7 +2965,7 @@ export default function EnglishReadingApp() {
                             setSelectedLibraryItem(item);
                             setLibraryContextMenu({ ...item, x: event.clientX, y: event.clientY });
                           }}
-                          className={`grid h-10 cursor-default grid-cols-[minmax(0,1fr)_90px_110px] items-center px-3 text-sm ${
+                          className={`grid h-10 cursor-default grid-cols-[minmax(0,1fr)_90px] items-center px-3 text-sm ${
                             selected ? "bg-blue-100 text-blue-950" : "hover:bg-gray-50"
                           }`}
                         >
@@ -2952,13 +2987,11 @@ export default function EnglishReadingApp() {
                               <span className="truncate">{unit.title}</span>
                             )}
                           </div>
-                          <span className="text-right text-xs text-gray-500">
-                            {unit.lines.length}
-                          </span>
-                          <span className="text-right text-xs text-gray-500">
+                          <span className="flex items-center justify-end text-xs text-gray-500">
                             {unit.created_at
                               ? new Date(unit.created_at).toLocaleDateString("ja-JP")
                               : ""}
+                            {libraryMenuButton(item, unit.title)}
                           </span>
                         </div>
                       );
@@ -2989,9 +3022,11 @@ export default function EnglishReadingApp() {
                         >
                           <BookOpen size={16} className="shrink-0 text-gray-400" />
                           <span className="min-w-0 flex-1 truncate">{unit.title}</span>
-                          <span className="max-w-[40%] truncate text-xs text-gray-400">
-                            {folders.find((folder) => folder.id === unit.folder_id)?.name ?? ""}
+                          <span title={`保存場所: ${getFolderPath(unit.folder_id)}`} className="flex min-w-0 max-w-[45%] items-center gap-1 text-xs text-gray-500">
+                            <Folder size={13} className="shrink-0" />
+                            <span className="truncate">{getFolderPath(unit.folder_id)}</span>
                           </span>
+                          {libraryMenuButton({ type: "unit", id }, unit.title)}
                         </div>
                       );
                     })}
@@ -3006,7 +3041,10 @@ export default function EnglishReadingApp() {
                 style={{ left: libraryContextMenu.x, top: libraryContextMenu.y }}
                 onClick={(event) => event.stopPropagation()}
               >
-                {libraryContextMenu.type === "unit" ? (
+                {libraryContextMenu.type === "blank" ? <>
+                  <button className="block w-full px-3 py-2 text-left hover:bg-gray-100" onClick={() => { setShowFolderInput(true); setLibraryContextMenu(null); }}>新規フォルダー</button>
+                  <button className="block w-full px-3 py-2 text-left hover:bg-gray-100" onClick={() => { setNewUnitFolder(selectedFolder ?? ""); setCurrentView("add"); setLibraryContextMenu(null); }}>新規ユニット</button>
+                </> : libraryContextMenu.type === "unit" ? (
                   <>
                     <button
                       type="button"
@@ -4579,12 +4617,21 @@ export default function EnglishReadingApp() {
                 </button>
               </div>
 
-              {vocabulary.length === 0 ? (
+              {filteredVocabulary.length === 0 ? (
                 <p className="text-gray-500">単語がありません</p>
               ) : (
                 <>
+                  <div className="relative mb-3 px-10 sm:px-12">
+                    <button type="button" aria-label="前のカード" disabled={currentCardIndex === 0}
+                      onClick={() => { setCurrentCardIndex((index) => Math.max(0, index - 1)); setShowAnswer(false); }}
+                      className="absolute left-0 top-1/2 -translate-y-1/2 rounded-full bg-white p-2 text-gray-700 shadow-sm hover:bg-gray-100 disabled:opacity-30"><ChevronLeft size={24} /></button>
+                    <button type="button" aria-label="次のカード" disabled={currentCardIndex >= filteredVocabulary.length - 1}
+                      onClick={() => { setCurrentCardIndex((index) => Math.min(filteredVocabulary.length - 1, index + 1)); setShowAnswer(false); }}
+                      className="absolute right-0 top-1/2 -translate-y-1/2 rounded-full bg-white p-2 text-gray-700 shadow-sm hover:bg-gray-100 disabled:opacity-30"><ChevronRight size={24} /></button>
                   <div
-                    className="bg-white shadow p-10 rounded-lg mb-4 cursor-pointer"
+                    role="button" tabIndex={0} aria-label="カードの表裏を切り替え"
+                    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setShowAnswer((value) => !value); } }}
+                    className="flex min-h-48 cursor-pointer flex-col justify-center break-words rounded-lg bg-white p-5 shadow sm:p-10"
                     onClick={() => setShowAnswer(!showAnswer)}
                   >
                     {!showAnswer ? (
@@ -4609,77 +4656,25 @@ export default function EnglishReadingApp() {
                     )}
                   </div>
 
-                  <div className="flex justify-center gap-3 mb-4">
-                    <button
-                      onClick={() => {
-                        setFlashcardShowWord(true);
-                        setShowAnswer(false);
-                      }}
-                      className={`px-3 py-1 rounded ${
-                        flashcardShowWord
-                          ? "bg-blue-600 text-white"
-                          : "bg-gray-200"
-                      }`}
-                    >
-                      単語→意味
-                    </button>
-                    <button
-                      onClick={() => {
-                        setFlashcardShowWord(false);
-                        setShowAnswer(false);
-                      }}
-                      className={`px-3 py-1 rounded ${
-                        !flashcardShowWord
-                          ? "bg-blue-600 text-white"
-                          : "bg-gray-200"
-                      }`}
-                    >
-                      意味→単語
-                    </button>
                   </div>
-
-                  <div className="flex justify-center gap-4">
-                    <button
-                      onClick={() => {
-                        setCurrentCardIndex(Math.max(0, currentCardIndex - 1));
-                        setShowAnswer(false);
-                      }}
-                      disabled={currentCardIndex === 0}
-                      className="bg-gray-600 text-white px-4 py-2 rounded disabled:bg-gray-300"
-                    >
-                      前へ
+                  <div className="flex items-center justify-center gap-3">
+                    <button title="出題方向を切り替え" onClick={() => { setFlashcardShowWord((value) => !value); setShowAnswer(false); }}
+                      className="rounded border border-gray-300 bg-white px-3 py-1 text-sm text-gray-700 hover:bg-gray-50">
+                      {flashcardShowWord ? "単語→意味" : "意味→単語"}
                     </button>
-                    <button
-                      onClick={() => setShowAnswer(!showAnswer)}
-                      className="bg-blue-600 text-white px-4 py-2 rounded"
-                    >
-                      {showAnswer ? "問題を表示" : "答えを表示"}
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (currentCardIndex < filteredVocabulary.length - 1) {
-                          setCurrentCardIndex(currentCardIndex + 1);
-                          setShowAnswer(false);
-                        }
-                      }}
-                      disabled={currentCardIndex === filteredVocabulary.length - 1}
-                      className="bg-gray-600 text-white px-4 py-2 rounded disabled:bg-gray-300"
-                    >
-                      次へ
-                    </button>
+                    <span className="text-xs tabular-nums text-gray-500">{currentCardIndex + 1} / {filteredVocabulary.length}</span>
                   </div>
                 </>
               )}
             </div>
           ) : (
-            <div className="max-w-5xl mx-auto">
-              <div className="flex justify-between mb-4">
-                <h2 className="text-xl font-semibold">単語帳</h2>
+            <div className="w-full">
+              <div className="flex justify-end mb-2">
                 <div className="flex gap-2">
                   <button
                     onClick={exportVocabularyCsv}
                     disabled={filteredVocabulary.length === 0}
-                    className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded disabled:bg-gray-300"
+                    className="flex items-center gap-1.5 bg-green-600 text-white px-3 py-1.5 text-sm rounded disabled:bg-gray-300"
                   >
                     <Save size={18} />
                     CSV出力
@@ -4694,54 +4689,24 @@ export default function EnglishReadingApp() {
                       }
                     }}
                     disabled={filteredVocabulary.length === 0}
-                    className="bg-purple-600 text-white px-4 py-2 rounded disabled:bg-gray-300"
+                    className="bg-purple-600 text-white px-3 py-1.5 text-sm rounded disabled:bg-gray-300"
                   >
                     フラッシュカード
                   </button>
                 </div>
               </div>
-              <div className="flex gap-3 mb-4">
-                <select
-                  value={vocabFolder}
-                  onChange={(e) => {
-                    if (!cancelVocabularyEdit()) return;
-                     setVocabFolder(e.target.value);
-                    setVocabUnit("");
-                  }}
-                   className="px-3 py-2 border border-gray-300 rounded-lg"
-                >
-                  <option value="">すべてのフォルダー</option>
-                  {getFolderOptions().map(({ folder, depth }) => (
-                    <option key={folder.id} value={folder.id}>
-                      {`${"　".repeat(depth)}${depth > 0 ? "└ " : ""}${folder.name}`}
-                    </option>
-                  ))}
-                 </select>
-
-                 <select
-                  value={vocabUnit}
-                  onChange={(e) => {
-                    if (!cancelVocabularyEdit()) return;
-                    setVocabUnit(e.target.value);
-                  }}
-                  className="px-3 py-2 border border-gray-300 rounded-lg"
-                 >
-                  <option value="">すべてのユニット</option>
-                  {vocabUnits.map((unit) => (
-                    <option key={unit.id} value={unit.id}>
-                       {unit.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="bg-white rounded shadow">
+              <VocabularyScope folders={folders} units={units} folderId={vocabFolder || null} selection={vocabSelection}
+                onNavigate={(id) => { if (!cancelVocabularyEdit()) return; setVocabFolder(id ?? ""); setVocabSelection([]); setCurrentCardIndex(0); setShowAnswer(false); }}
+                onSelect={(items, parent) => { if (!cancelVocabularyEdit()) return; if (parent !== undefined) setVocabFolder(parent ?? ""); setVocabSelection(items); setCurrentCardIndex(0); setShowAnswer(false); }} />
+              <div className="bg-white">
                 {filteredVocabulary.length === 0 ? (
                   <div className="text-center py-10 text-gray-500">
                     <p>単語がありません</p>
                   </div>
                 ) : (
-                  <table className="w-full">
-                    <thead className="bg-gray-50 border-b">
+                  <table className="block w-full text-sm sm:table sm:table-fixed">
+                    <colgroup className="hidden sm:table-column-group"><col className="w-[25%]" /><col className="w-[45%]" /><col /><col className="w-12" /></colgroup>
+                    <thead className="hidden border-b border-gray-200 bg-gray-50 sm:table-header-group">
                       <tr>
                         <th className="px-4 py-2 text-left text-sm font-medium text-gray-600">
                           単語
@@ -4755,11 +4720,11 @@ export default function EnglishReadingApp() {
                         <th className="px-4 py-2"></th>
                       </tr>
                     </thead>
-                    <tbody>
+                    <tbody className="block sm:table-row-group">
                       {filteredVocabulary.map((v) => (
                         <tr
                           key={v.id}
-                          className="border-b"
+                          className="grid grid-cols-[minmax(0,1fr)_36px] border-b border-gray-100 px-3 py-2 hover:bg-gray-50 sm:table-row sm:p-0"
                           onContextMenu={(event) => {
                             if (editingVocabulary?.id === v.id) return;
                             event.preventDefault();
@@ -4767,7 +4732,7 @@ export default function EnglishReadingApp() {
                             setVocabularyMenuId(v.id);
                           }}
                         >
-                          <td className="px-4 py-2">
+                          <td className="col-start-1 break-words font-medium text-gray-900 sm:px-3 sm:py-2">
                             {editingVocabulary?.id === v.id ? (
                               <input
                                 type="text"
@@ -4781,7 +4746,7 @@ export default function EnglishReadingApp() {
                               v.word
                             )}
                           </td>
-                          <td className="px-4 py-2">
+                          <td className="col-start-1 break-words text-gray-700 sm:px-3 sm:py-2">
                             {editingVocabulary?.id === v.id ? (
                               <input
                                 type="text"
@@ -4795,8 +4760,8 @@ export default function EnglishReadingApp() {
                               v.meaning
                             )}
                           </td>
-                          <td className="px-4 py-2">{v.unit_title}</td>
-                          <td className="relative px-4 py-2 text-right">
+                          <td className="col-start-1 break-words text-xs text-gray-500 sm:px-3 sm:py-2">{v.unit_title}</td>
+                          <td className={`relative text-right sm:px-2 sm:py-2 ${editingVocabulary?.id === v.id ? "col-span-2 mt-2 sm:mt-0" : "col-start-2 row-start-1 row-end-4"}`}>
                             {editingVocabulary?.id === v.id ? (
                               <div className="flex justify-end gap-2">
                                 <button
