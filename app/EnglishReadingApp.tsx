@@ -1,9 +1,23 @@
 "use client";
 
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import ReactMarkdown from "react-markdown";
+import TimingEditor from "./TimingEditor";
 import {
+  ArrowLeft,
+  ArrowRight,
   BookOpen,
+  CornerDownLeft,
+  CornerUpRight,
+  Pause,
+  Play,
+  Repeat1,
   Plus,
   List,
   X,
@@ -14,9 +28,17 @@ import {
   MoreVertical,
   Save,
   ChevronDown,
+  ChevronUp,
+  ChevronLeft,
   ChevronRight,
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
+import {
+  convertMfaAlignment,
+  inspectAlignmentTiming,
+  type TimedLine,
+  type UnitAlignment,
+} from "@/lib/mfaAlignment";
 import {
   isPronounceableSegment,
   segmentPronunciationLine,
@@ -35,6 +57,16 @@ type DraggedLibraryItem = {
   id: string;
 };
 
+type LibraryItemRef = {
+  type: "folder" | "unit";
+  id: string;
+};
+
+type LibraryContextMenu = LibraryItemRef & {
+  x: number;
+  y: number;
+};
+
 type UnitType = {
   id: string;
   title: string;
@@ -48,6 +80,76 @@ type UnitType = {
     showPhonetic?: boolean;
   }[];
   created_at?: string;
+  audio_path?: string | null;
+  audio_name?: string | null;
+  alignment_path?: string | null;
+  alignment_name?: string | null;
+  alignment_data?: UnitAlignment | null;
+  alignment_edits?: UnitAlignment | null;
+  updated_at?: string | null;
+};
+
+type LocalUnitMedia = {
+  audioName: string;
+  audioUrl: string;
+  alignmentName: string;
+  alignment: UnitAlignment | null;
+};
+
+const UNIT_MEDIA_BUCKET = "unit-media";
+
+const MediaFields = ({ audioName, audioUrl, alignmentName, alignment, error,
+  uploadAudio, onUploadAudio, onAudio, onAlignment, onRemoveAudio, onRemoveAlignment,
+  duration, onDuration,
+}: {
+  audioName: string; audioUrl: string; alignmentName: string;
+  alignment: UnitAlignment | null; error: string;
+  uploadAudio: boolean; onUploadAudio?: (value: boolean) => void;
+  onAudio: (file: File | null) => void;
+  onAlignment: (file: File | null) => void;
+  onRemoveAudio: () => void; onRemoveAlignment: () => void;
+  duration?: number; onDuration: (value: number | undefined) => void;
+}) => {
+  const warnings = alignment ? inspectAlignmentTiming(alignment, duration) : [];
+  return <div className="space-y-1.5 rounded-lg border border-gray-200 p-2.5">
+    <h3 className="text-xs font-semibold text-gray-700">音声同期</h3>
+    {audioUrl && <audio key={audioUrl} src={audioUrl} preload="metadata"
+      onLoadedMetadata={(event) => onDuration(event.currentTarget.duration)}
+      onError={() => onDuration(undefined)} />}
+    {(["audio", "json"] as const).map((kind) => {
+      const name = kind === "audio" ? audioName : alignmentName;
+      return <div key={kind} className="flex min-w-0 items-center gap-2 text-xs">
+        <span className="w-14 shrink-0 text-gray-500">{kind === "audio" ? "音声" : "JSON"}</span>
+        <label className="shrink-0 cursor-pointer rounded border border-gray-200 px-2 py-1 text-gray-600 hover:bg-gray-50">
+          選択
+          <input type="file" className="sr-only"
+            accept={kind === "audio" ? "audio/*,.mp3,.wav,.m4a,.flac,.ogg" : "application/json,.json"}
+            onChange={(event) => {
+              const file = event.target.files?.[0] ?? null;
+              if (kind === "audio") { onDuration(undefined); onAudio(file); }
+              else onAlignment(file);
+              event.target.value = "";
+            }} />
+        </label>
+        <span className="min-w-0 flex-1 truncate text-gray-600" title={name}>{name || "未選択"}</span>
+        {name && <button type="button" className="shrink-0 text-red-500 hover:text-red-700"
+          onClick={kind === "audio" ? onRemoveAudio : onRemoveAlignment}>削除</button>}
+      </div>;
+    })}
+    {onUploadAudio && audioName && <label className="flex items-center gap-2 text-xs text-gray-600">
+      <input type="checkbox" checked={uploadAudio} onChange={(event) => onUploadAudio(event.target.checked)} />音声をクラウドに保存
+    </label>}
+    {alignment && <p className="text-xs text-gray-500">
+      {alignment.review.matchedWords}/{alignment.review.totalScriptWords}語を対応付け
+      {(alignment.review.unmatchedScriptWords.length > 0 || alignment.review.unusedMfaWords.length > 0) &&
+        `（未対応: 原文${alignment.review.unmatchedScriptWords.length}語／JSON${alignment.review.unusedMfaWords.length}語）`}
+    </p>}
+    {warnings.length > 0 && <div className="space-y-1 text-xs text-amber-700">
+      {warnings.map((warning) => <p key={warning}>{warning}</p>)}
+      <p>文字の対応数は、音声との同期精度を保証するものではありません。</p>
+    </div>}
+    {error && <p className="text-xs text-red-600">{error}</p>}
+  </div>;
 };
 
 type VocabularyType = {
@@ -94,6 +196,7 @@ type PhoneticEditorProps = {
   source: string;
   value: string;
   issues: PhoneticReviewIssue[];
+  onSourceChange?: (value: string) => void;
   onChange: (value: string) => void;
   onIssuesChange: (issues: PhoneticReviewIssue[]) => void;
 };
@@ -102,11 +205,37 @@ const PhoneticEditor = ({
   source,
   value,
   issues,
+  onSourceChange,
   onChange,
   onIssuesChange,
 }: PhoneticEditorProps) => {
+  const [isEditingSource, setIsEditingSource] = useState(!source.trim());
+  const [editingPhonetic, setEditingPhonetic] = useState<{
+    lineIndex: number;
+    tokenIndex: number;
+    mode: "segments" | "legacy";
+  } | null>(null);
+  const [phoneticDraft, setPhoneticDraft] = useState("");
   const sourceLines = source.split("\n");
   const phoneticLines = value.split("\n");
+
+  const commitPhoneticDraft = () => {
+    if (!editingPhonetic) return;
+    const nextLines = [...phoneticLines];
+    while (nextLines.length < sourceLines.length) nextLines.push("");
+    const currentLine = nextLines[editingPhonetic.lineIndex] ?? "";
+    const tokens =
+      editingPhonetic.mode === "segments"
+        ? currentLine.split(/\s*\|\s*/)
+        : currentLine.trim().split(/\s+/);
+    tokens[editingPhonetic.tokenIndex] = phoneticDraft.trim();
+    nextLines[editingPhonetic.lineIndex] =
+      editingPhonetic.mode === "segments"
+        ? tokens.join(" | ")
+        : tokens.join(" ");
+    onChange(nextLines.join("\n"));
+    setEditingPhonetic(null);
+  };
 
   const updateIssue = (issue: PhoneticReviewIssue, tokens: string[]) => {
     onIssuesChange(
@@ -132,7 +261,50 @@ const PhoneticEditor = ({
 
   return (
     <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3">
-      {sourceLines.map((line, lineIndex) => {
+      {onSourceChange && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 pb-2">
+          <span className="text-xs text-gray-500">
+            {isEditingSource
+              ? "原文を編集しています"
+              : "原文を編集するには「全文を編集」を押してください"}
+          </span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setIsEditingSource((current) => !current)}
+              className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-100"
+            >
+              {isEditingSource ? "プレビュー" : "全文を編集"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!source.trim()) return;
+                if (!window.confirm("原文をすべて削除しますか？")) return;
+                onSourceChange("");
+                onChange("");
+                onIssuesChange([]);
+                setIsEditingSource(true);
+              }}
+              disabled={!source.trim()}
+              className="rounded border border-red-200 bg-white px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              全文を削除
+            </button>
+          </div>
+        </div>
+      )}
+      {isEditingSource && onSourceChange ? (
+        <textarea
+          value={source}
+          onChange={(event) => onSourceChange(event.target.value)}
+          placeholder="英文を行ごとに入力、または全文を貼り付けてください"
+          className="h-64 w-full resize-y rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm leading-relaxed focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+        />
+      ) : (
+        <div className="max-h-72 overflow-y-auto pr-1">
+          {source.trim() ? (
+            sourceLines.map((line, lineIndex) => {
         if (!line.trim()) return null;
         const segments = segmentPronunciationLine(line);
         const displaySegments = segments.filter(
@@ -246,9 +418,39 @@ const PhoneticEditor = ({
                   className="whitespace-nowrap [ruby-overhang:none]"
                 >
                   {word}
-                  <rt className="text-xs font-normal text-gray-500">
-                    {legacyPhoneticWords[wordIndex]}
-                  </rt>
+                  {editingPhonetic?.lineIndex === lineIndex &&
+                  editingPhonetic.tokenIndex === wordIndex &&
+                  editingPhonetic.mode === "legacy" ? (
+                    <rt>
+                      <input
+                        autoFocus
+                        value={phoneticDraft}
+                        onChange={(event) => setPhoneticDraft(event.target.value)}
+                        onBlur={commitPhoneticDraft}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                          if (event.key === "Escape") setEditingPhonetic(null);
+                        }}
+                        className="w-20 rounded border border-blue-300 bg-white px-1 text-center text-xs"
+                        aria-label={`${word}の発音記号を編集`}
+                      />
+                    </rt>
+                  ) : (
+                    <rt
+                      title="クリックして発音記号を編集"
+                      onClick={() => {
+                        setPhoneticDraft(legacyPhoneticWords[wordIndex] ?? "");
+                        setEditingPhonetic({
+                          lineIndex,
+                          tokenIndex: wordIndex,
+                          mode: "legacy",
+                        });
+                      }}
+                      className="cursor-text text-xs font-normal text-gray-500 hover:text-blue-600"
+                    >
+                      {legacyPhoneticWords[wordIndex]}
+                    </rt>
+                  )}
                 </ruby>
               ))}
             </div>
@@ -265,11 +467,44 @@ const PhoneticEditor = ({
               if (segment.isWhitespace) {
                 return <span key={segmentIndex}>{segment.text}</span>;
               }
-              const phonetic = phoneticTokens[phoneticIndex++] ?? "";
+              const currentPhoneticIndex = phoneticIndex++;
+              const phonetic = phoneticTokens[currentPhoneticIndex] ?? "";
               return phonetic ? (
                 <ruby key={segmentIndex} className="whitespace-nowrap [ruby-overhang:none]">
                   {segment.text}
-                  <rt className="text-xs font-normal text-gray-500">{phonetic}</rt>
+                  {editingPhonetic?.lineIndex === lineIndex &&
+                  editingPhonetic.tokenIndex === currentPhoneticIndex &&
+                  editingPhonetic.mode === "segments" ? (
+                    <rt>
+                      <input
+                        autoFocus
+                        value={phoneticDraft}
+                        onChange={(event) => setPhoneticDraft(event.target.value)}
+                        onBlur={commitPhoneticDraft}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                          if (event.key === "Escape") setEditingPhonetic(null);
+                        }}
+                        className="w-20 rounded border border-blue-300 bg-white px-1 text-center text-xs"
+                        aria-label={`${segment.text}の発音記号を編集`}
+                      />
+                    </rt>
+                  ) : (
+                    <rt
+                      title="クリックして発音記号を編集"
+                      onClick={() => {
+                        setPhoneticDraft(phonetic);
+                        setEditingPhonetic({
+                          lineIndex,
+                          tokenIndex: currentPhoneticIndex,
+                          mode: "segments",
+                        });
+                      }}
+                      className="cursor-text text-xs font-normal text-gray-500 hover:text-blue-600"
+                    >
+                      {phonetic}
+                    </rt>
+                  )}
                 </ruby>
               ) : (
                 <span key={segmentIndex}>{segment.text}</span>
@@ -277,10 +512,16 @@ const PhoneticEditor = ({
             })}
           </div>
         );
-      })}
-      {!source.trim() && (
-        <div className="py-4 text-center text-xs text-gray-500">
-          英文を入力すると、ここにルビ表示されます。
+            })
+          ) : (
+            <button
+              type="button"
+              onClick={() => setIsEditingSource(true)}
+              className="w-full rounded-lg border border-dashed border-gray-300 bg-white px-4 py-8 text-sm text-gray-500 hover:border-blue-400 hover:text-blue-600"
+            >
+              原文を入力
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -306,6 +547,16 @@ export default function EnglishReadingApp() {
     "list" | "add" | "edit" | "reader" | "vocabulary"
   >("list");
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [isFolderSidebarCollapsed, setIsFolderSidebarCollapsed] = useState(false);
+  const [focusedTreeFolderId, setFocusedTreeFolderId] = useState<string | null>(null);
+  const folderTreeRef = useRef<HTMLElement>(null);
+  const libraryContentsRef = useRef<HTMLElement>(null);
+  const recentUnits = [...units]
+    .sort((first, second) =>
+      (Date.parse(second.updated_at ?? second.created_at ?? "") || 0) -
+      (Date.parse(first.updated_at ?? first.created_at ?? "") || 0),
+    )
+    .slice(0, 6);
   const [selectedUnit, setSelectedUnit] = useState<UnitType | null>(null);
   const [newFolderName, setNewFolderName] = useState("");
   const [showFolderInput, setShowFolderInput] = useState(false);
@@ -318,6 +569,20 @@ export default function EnglishReadingApp() {
   const [libraryDropTarget, setLibraryDropTarget] = useState<string | null>(
     null,
   );
+  const [selectedLibraryItem, setSelectedLibraryItem] =
+    useState<LibraryItemRef | null>(null);
+  const [libraryContextMenu, setLibraryContextMenu] =
+    useState<LibraryContextMenu | null>(null);
+  const [renamingLibraryItem, setRenamingLibraryItem] =
+    useState<LibraryItemRef | null>(null);
+  const [renamingLibraryValue, setRenamingLibraryValue] = useState("");
+  const [librarySortKey, setLibrarySortKey] = useState<"name" | "created">(
+    "created",
+  );
+  const [librarySortDirection, setLibrarySortDirection] = useState<
+    "asc" | "desc"
+  >("desc");
+  const libraryRenameTimerRef = useRef<number | null>(null);
 
   // === ユニット追加用 ===
   const [newUnitTitle, setNewUnitTitle] = useState("");
@@ -328,6 +593,15 @@ export default function EnglishReadingApp() {
     PhoneticReviewIssue[]
   >([]);
   const [newUnitFolder, setNewUnitFolder] = useState("");
+  const [newAudioName, setNewAudioName] = useState("");
+  const [newAudioUrl, setNewAudioUrl] = useState("");
+  const [newAudioFile, setNewAudioFile] = useState<File | null>(null);
+  const [newUploadAudio, setNewUploadAudio] = useState(false);
+  const [newAlignmentName, setNewAlignmentName] = useState("");
+  const [newAlignment, setNewAlignment] = useState<UnitAlignment | null>(null);
+  const [newAlignmentFile, setNewAlignmentFile] = useState<File | null>(null);
+  const [newMediaError, setNewMediaError] = useState("");
+  const [newMediaDuration, setNewMediaDuration] = useState<number | undefined>();
 
   // === フラッシュカード関連 ===
   const [flashcardMode, setFlashcardMode] = useState(false);
@@ -373,6 +647,38 @@ export default function EnglishReadingApp() {
     PhoneticReviewIssue[]
   >([]);
   const [editUnitFolder, setEditUnitFolder] = useState("");
+  const [localUnitMedia, setLocalUnitMedia] = useState<
+    Record<string, LocalUnitMedia>
+  >({});
+  const [editAudioName, setEditAudioName] = useState("");
+  const [editAudioUrl, setEditAudioUrl] = useState("");
+  const [editAudioFile, setEditAudioFile] = useState<File | null>(null);
+  const [editUploadAudio, setEditUploadAudio] = useState(false);
+  const [editAlignmentName, setEditAlignmentName] = useState("");
+  const [editAlignment, setEditAlignment] = useState<UnitAlignment | null>(null);
+  const [editAlignmentFile, setEditAlignmentFile] = useState<File | null>(null);
+  const [editMediaError, setEditMediaError] = useState("");
+  const [editMediaDuration, setEditMediaDuration] = useState<number | undefined>();
+  const [removeEditAudio, setRemoveEditAudio] = useState(false);
+  const [removeEditAlignment, setRemoveEditAlignment] = useState(false);
+  const [editMediaDirty, setEditMediaDirty] = useState(false);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [timingEditing, setTimingEditing] = useState(false);
+  const [playerExpanded, setPlayerExpanded] = useState(false);
+  const [timingEditLineId, setTimingEditLineId] = useState<number | null>(null);
+  const timingOriginalRef = useRef<UnitAlignment | null>(null);
+  const timingOwnerRef = useRef<string | null>(null);
+  const playbackFrameRef = useRef<number | null>(null);
+  const armedTimedTargetRef = useRef<string | null>(null);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [loopTimedLineId, setLoopTimedLineId] = useState<number | null>(null);
+  const [activeTimedLineId, setActiveTimedLineId] = useState<number | null>(null);
+  const [activeTimedWordIndex, setActiveTimedWordIndex] = useState<number | null>(null);
+  const [followPlayback, setFollowPlayback] = useState(true);
+  const automaticScrollUntilRef = useRef(0);
   const [generatingUnitField, setGeneratingUnitField] = useState<
     "translation" | "phonetic" | "both" | null
   >(null);
@@ -399,7 +705,8 @@ export default function EnglishReadingApp() {
         editUnitJapanese !==
           editingUnit.lines.map((line) => line.japanese).join("\n") ||
         editUnitPhonetic !==
-          editingUnit.lines.map((line) => line.phonetic).join("\n")),
+          editingUnit.lines.map((line) => line.phonetic).join("\n") ||
+        editMediaDirty),
   );
   const hasVocabularyUnsavedChanges = Boolean(
     editingVocabulary &&
@@ -408,11 +715,12 @@ export default function EnglishReadingApp() {
   );
 
   const captureReadingScrollAnchor = () => {
+    const viewport = document.querySelector<HTMLElement>("[data-reader-scroll]")?.getBoundingClientRect();
     const visibleLine = Array.from(
       document.querySelectorAll<HTMLElement>("[data-reader-line-id]"),
     ).find((element) => {
       const rect = element.getBoundingClientRect();
-      return rect.bottom > 0 && rect.top < window.innerHeight;
+      return rect.bottom > (viewport?.top ?? 0) && rect.top < (viewport?.bottom ?? window.innerHeight);
     });
 
     if (visibleLine) {
@@ -431,7 +739,9 @@ export default function EnglishReadingApp() {
 
     const topDifference = anchor.element.getBoundingClientRect().top - anchor.top;
     if (Math.abs(topDifference) > 0.5) {
-      window.scrollBy(0, topDifference);
+      const viewport = document.querySelector<HTMLElement>("[data-reader-scroll]");
+      if (viewport) viewport.scrollBy(0, topDifference);
+      else window.scrollBy(0, topDifference);
     }
   }, [hasReaderSidePanel]);
 
@@ -466,7 +776,28 @@ export default function EnglishReadingApp() {
     if (vRes.error) console.error("vocabulary load error", vRes.error);
 
     if (fRes.data) setFolders(fRes.data);
-    if (uRes.data) setUnits(uRes.data);
+    if (uRes.data) {
+      const loadedUnits = uRes.data as UnitType[];
+      setUnits(loadedUnits);
+      setLocalUnitMedia((current) => {
+        const loadedMedia: Record<string, LocalUnitMedia> = {};
+        loadedUnits.forEach((unit) => {
+          if (!unit.audio_path && !unit.alignment_data) return;
+          const audioUrl = unit.audio_path
+            ? supabase.storage
+                .from(UNIT_MEDIA_BUCKET)
+                .getPublicUrl(unit.audio_path).data.publicUrl
+            : "";
+          loadedMedia[unit.id] = {
+            audioName: unit.audio_name ?? "",
+            audioUrl,
+            alignmentName: unit.alignment_name ?? "",
+            alignment: unit.alignment_edits ?? unit.alignment_data ?? null,
+          };
+        });
+        return { ...loadedMedia, ...current };
+      });
+    }
     if (vRes.data) setVocabulary(vRes.data);
   };
 
@@ -501,6 +832,57 @@ export default function EnglishReadingApp() {
     window.addEventListener("click", closeFolderMenu);
     return () => window.removeEventListener("click", closeFolderMenu);
   }, [folderMenuId]);
+
+  useEffect(() => {
+    if (!libraryContextMenu) return;
+    const closeMenu = () => setLibraryContextMenu(null);
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("blur", closeMenu);
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("blur", closeMenu);
+    };
+  }, [libraryContextMenu]);
+
+  useEffect(() => {
+    if (currentView !== "reader") return;
+    const stopFollowingOnManualScroll = () => {
+      if (Date.now() < automaticScrollUntilRef.current) return;
+      setFollowPlayback(false);
+    };
+    window.addEventListener("wheel", stopFollowingOnManualScroll, {
+      passive: true,
+    });
+    window.addEventListener("touchstart", stopFollowingOnManualScroll, {
+      passive: true,
+    });
+    return () => {
+      window.removeEventListener("wheel", stopFollowingOnManualScroll);
+      window.removeEventListener("touchstart", stopFollowingOnManualScroll);
+    };
+  }, [currentView]);
+
+  useEffect(() => {
+    if (
+      currentView !== "reader" ||
+      !followPlayback ||
+      activeTimedLineId === null ||
+      window.getSelection()?.toString().trim()
+    ) {
+      return;
+    }
+    const element = document.querySelector<HTMLElement>(
+      `[data-reader-line-id="${activeTimedLineId}"]`,
+    );
+    if (!element) return;
+    const bounds = element.getBoundingClientRect();
+    const viewport = document.querySelector<HTMLElement>("[data-reader-scroll]")?.getBoundingClientRect();
+    const upperLimit = viewport ? viewport.top + viewport.height * 0.25 : window.innerHeight * 0.25;
+    const lowerLimit = viewport ? viewport.top + viewport.height * 0.7 : window.innerHeight * 0.7;
+    if (bounds.top >= upperLimit && bounds.bottom <= lowerLimit) return;
+    automaticScrollUntilRef.current = Date.now() + 700;
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [activeTimedLineId, currentView, followPlayback]);
 
   useEffect(() => {
     if (!vocabularyMenuId) return;
@@ -583,6 +965,7 @@ export default function EnglishReadingApp() {
       await loadAll();
       return;
     }
+    void removeUnitMediaFiles(containedUnits);
     setFolders(folders.filter((folder) => !descendantIds.has(folder.id)));
     const deletedUnitIds = new Set(containedUnits.map((unit) => unit.id));
     setUnits(units.filter((unit) => !deletedUnitIds.has(unit.id)));
@@ -636,6 +1019,457 @@ export default function EnglishReadingApp() {
       japanese: j[i] || "",
       phonetic: p[i] || "",
     }));
+  };
+
+  const getEditableEnglishLines = () =>
+    editUnitEnglish
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+  const handleNewAudioFile = (file: File | null) => {
+    if (!file) return;
+    if (file.size > 100 * 1024 * 1024) {
+      setNewMediaError("音声ファイルは100MB以下にしてください。");
+      return;
+    }
+    if (newAudioUrl) URL.revokeObjectURL(newAudioUrl);
+    setNewAudioFile(file);
+    setNewAudioName(file.name);
+    setNewAudioUrl(URL.createObjectURL(file));
+    setNewMediaError("");
+  };
+
+  const handleNewAlignmentFile = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const parsedJson = JSON.parse(await file.text()) as unknown;
+      const converted = convertMfaAlignment(
+        newUnitEnglish
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean),
+        parsedJson,
+      );
+      setNewAlignmentName(file.name);
+      setNewAlignment(converted);
+      setNewAlignmentFile(file);
+      setNewMediaError("");
+    } catch (error) {
+      setNewAlignmentName(file.name);
+      setNewAlignment(null);
+      setNewAlignmentFile(null);
+      setNewMediaError(
+        error instanceof Error
+          ? error.message
+          : "MFA JSONを読み取れませんでした。",
+      );
+    }
+  };
+
+  const handleNewUnitEnglishChange = (value: string) => {
+    setNewUnitEnglish(value);
+    setNewUnitPhoneticReview([]);
+    if (newAlignmentName) {
+      setNewAlignment(null);
+      setNewAlignmentFile(null);
+      setNewMediaError(
+        "原文を変更したため、MFA JSONをもう一度選択してください。",
+      );
+    }
+  };
+
+  const handleEditAudioFile = (file: File | null) => {
+    if (!file) return;
+    if (file.size > 100 * 1024 * 1024) {
+      setEditMediaError("音声ファイルは100MB以下にしてください。");
+      return;
+    }
+    const previousSavedUrl = editingUnit
+      ? localUnitMedia[editingUnit.id]?.audioUrl
+      : "";
+    if (editAudioUrl && editAudioUrl !== previousSavedUrl) {
+      URL.revokeObjectURL(editAudioUrl);
+    }
+    setEditAudioName(file.name);
+    setEditAudioUrl(URL.createObjectURL(file));
+    setEditAudioFile(file);
+    setRemoveEditAudio(false);
+    setEditUploadAudio(false);
+    setEditMediaError("");
+    setEditMediaDirty(true);
+  };
+
+  const handleEditAlignmentFile = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const parsedJson = JSON.parse(await file.text()) as unknown;
+      const converted = convertMfaAlignment(
+        getEditableEnglishLines(),
+        parsedJson,
+      );
+      setEditAlignmentName(file.name);
+      setEditAlignment(converted);
+      setEditAlignmentFile(file);
+      setRemoveEditAlignment(false);
+      setEditMediaError("");
+      setEditMediaDirty(true);
+    } catch (error) {
+      setEditAlignmentName(file.name);
+      setEditAlignment(null);
+      setEditAlignmentFile(null);
+      setEditMediaError(
+        error instanceof Error
+          ? error.message
+          : "MFA JSONを読み取れませんでした。",
+      );
+      setEditMediaDirty(true);
+    }
+  };
+
+  const handleEditUnitEnglishChange = (value: string) => {
+    setEditUnitEnglish(value);
+    setEditUnitPhoneticReview([]);
+    if (editAlignmentName) {
+      setEditAlignment(null);
+      setEditAlignmentFile(null);
+      setEditMediaError(
+        "原文を変更したため、MFA JSONをもう一度選択してください。",
+      );
+      setEditMediaDirty(true);
+    }
+  };
+
+  const uploadUnitMedia = async ({
+    unitId,
+    audioFile,
+    uploadAudio,
+    alignmentFile,
+    alignment,
+    existingAudioPath,
+  }: {
+    unitId: string;
+    audioFile: File | null;
+    uploadAudio: boolean;
+    alignmentFile: File | null;
+    alignment: UnitAlignment | null;
+    existingAudioPath?: string | null;
+  }) => {
+    const unitChanges: Partial<UnitType> = {};
+
+    if (alignmentFile && alignment) {
+      const alignmentPath = `units/${unitId}/alignment.json`;
+      const { error } = await supabase.storage
+        .from(UNIT_MEDIA_BUCKET)
+        .upload(alignmentPath, alignmentFile, {
+          contentType: alignmentFile.type || "application/json",
+          cacheControl: "3600",
+          upsert: true,
+        });
+      if (error) throw error;
+      unitChanges.alignment_path = alignmentPath;
+      unitChanges.alignment_name = alignmentFile.name;
+      unitChanges.alignment_data = alignment;
+      unitChanges.alignment_edits = null;
+    }
+
+    if (audioFile && uploadAudio) {
+      const rawExtension = audioFile.name.split(".").pop()?.toLowerCase() ?? "mp3";
+      const extension = rawExtension.replace(/[^a-z0-9]/g, "") || "mp3";
+      const audioPath = `units/${unitId}/audio-${Date.now()}.${extension}`;
+      const { error } = await supabase.storage
+        .from(UNIT_MEDIA_BUCKET)
+        .upload(audioPath, audioFile, {
+          contentType: audioFile.type || "application/octet-stream",
+          cacheControl: "3600",
+          upsert: true,
+        });
+      if (error) throw error;
+      unitChanges.audio_path = audioPath;
+      unitChanges.audio_name = audioFile.name;
+    }
+
+    if (Object.keys(unitChanges).length > 0) {
+      const { error } = await supabase
+        .from("units")
+        .update(unitChanges)
+        .eq("id", unitId);
+      if (error) throw error;
+    }
+
+    if (
+      unitChanges.audio_path &&
+      existingAudioPath &&
+      existingAudioPath !== unitChanges.audio_path
+    ) {
+      const { error } = await supabase.storage
+        .from(UNIT_MEDIA_BUCKET)
+        .remove([existingAudioPath]);
+      if (error) console.error("old audio cleanup error", error);
+    }
+
+    return unitChanges;
+  };
+
+  const removeUnitMediaFiles = async (targetUnits: UnitType[]) => {
+    const paths = targetUnits.flatMap((unit) =>
+      [unit.audio_path, unit.alignment_path].filter(
+        (path): path is string => Boolean(path),
+      ),
+    );
+    if (!paths.length) return;
+    const { error } = await supabase.storage
+      .from(UNIT_MEDIA_BUCKET)
+      .remove(paths);
+    if (error) console.error("unit media cleanup error", error);
+  };
+
+  const updateActiveTiming = useCallback((timeSeconds: number) => {
+    const alignment = selectedUnit
+      ? localUnitMedia[selectedUnit.id]?.alignment
+      : null;
+    if (!alignment) {
+      setActiveTimedLineId(null);
+      setActiveTimedWordIndex(null);
+      return;
+    }
+    const timeMs = timeSeconds * 1000;
+    let activeLine: TimedLine | undefined;
+    for (const line of alignment.lines) {
+      if (line.startMs !== null && line.startMs <= timeMs) activeLine = line;
+      if (line.startMs !== null && line.startMs > timeMs) break;
+    }
+    if (!activeLine) {
+      setActiveTimedLineId(null);
+      setActiveTimedWordIndex(null);
+      return;
+    }
+    setActiveTimedLineId(activeLine.lineId);
+    let activeWordIndex: number | null = null;
+    for (const word of activeLine.words) {
+      if (word.startMs <= timeMs) activeWordIndex = word.wordIndex;
+      if (word.startMs > timeMs) break;
+    }
+    setActiveTimedWordIndex(activeWordIndex);
+  }, [localUnitMedia, selectedUnit]);
+
+  useEffect(() => {
+    if (!isAudioPlaying) return;
+    const tick = () => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      if (loopTimedLineId !== null && selectedUnit) {
+        const loopLine = localUnitMedia[
+          selectedUnit.id
+        ]?.alignment?.lines.find((line) => line.lineId === loopTimedLineId);
+        if (
+          loopLine?.startMs !== null &&
+          loopLine?.startMs !== undefined &&
+          loopLine.endMs !== null &&
+          audio.currentTime * 1000 >= loopLine.endMs
+        ) {
+          audio.currentTime = loopLine.startMs / 1000;
+        }
+      }
+      setAudioCurrentTime(audio.currentTime);
+      updateActiveTiming(audio.currentTime);
+      playbackFrameRef.current = window.requestAnimationFrame(tick);
+    };
+    playbackFrameRef.current = window.requestAnimationFrame(tick);
+    return () => {
+      if (playbackFrameRef.current !== null) {
+        window.cancelAnimationFrame(playbackFrameRef.current);
+        playbackFrameRef.current = null;
+      }
+    };
+  }, [
+    isAudioPlaying,
+    localUnitMedia,
+    loopTimedLineId,
+    selectedUnit,
+    updateActiveTiming,
+  ]);
+
+  useEffect(() => {
+    if (currentView === "reader") return;
+    armedTimedTargetRef.current = null;
+    audioRef.current?.pause();
+    setIsAudioPlaying(false);
+    setAudioCurrentTime(0);
+    setActiveTimedLineId(null);
+    setActiveTimedWordIndex(null);
+    setLoopTimedLineId(null);
+  }, [currentView]);
+
+  useEffect(() => {
+    armedTimedTargetRef.current = null;
+    setTimingEditing(false);
+    setTimingEditLineId(null);
+  }, [selectedUnit?.id]);
+
+  useEffect(() => {
+    const owner = timingOwnerRef.current;
+    const original = timingOriginalRef.current;
+    if (owner && original && (currentView !== "reader" || selectedUnit?.id !== owner)) {
+      setLocalUnitMedia((items) => items[owner] ? { ...items, [owner]: { ...items[owner], alignment: original } } : items);
+      timingOwnerRef.current = null;
+      setTimingEditing(false);
+    }
+  }, [currentView, selectedUnit?.id]);
+
+  const changeReaderTiming = (alignment: UnitAlignment) => {
+    if (!selectedUnit) return;
+    setLocalUnitMedia((items) => ({ ...items, [selectedUnit.id]: { ...items[selectedUnit.id], alignment } }));
+  };
+
+  const saveReaderTiming = async () => {
+    if (!selectedUnit) return;
+    const alignment = localUnitMedia[selectedUnit.id]?.alignment;
+    if (!alignment) return;
+    const { error } = await supabase.from("units").update({ alignment_edits: alignment }).eq("id", selectedUnit.id);
+    if (error) throw new Error(`時間修正の保存に失敗しました: ${error.message}`);
+    setUnits((items) => items.map((unit) => unit.id === selectedUnit.id ? { ...unit, alignment_edits: alignment } : unit));
+    setSelectedUnit((unit) => unit ? { ...unit, alignment_edits: alignment } : unit);
+    timingOwnerRef.current = null;
+    setTimingEditing(false);
+  };
+
+  const seekAudio = (timeSeconds: number, play?: boolean) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const shouldPlay = play ?? !audio.paused;
+    const nextTime = Math.min(
+      Math.max(timeSeconds, 0),
+      Number.isFinite(audio.duration) ? audio.duration : timeSeconds,
+    );
+    audio.currentTime = nextTime;
+    if (loopTimedLineId !== null && selectedUnit) {
+      const timeMs = nextTime * 1000;
+      let nextLoopLineId: number | null = null;
+      for (const line of localUnitMedia[selectedUnit.id]?.alignment?.lines ?? []) {
+        if (line.startMs !== null && line.startMs <= timeMs) {
+          nextLoopLineId = line.lineId;
+        }
+        if (line.startMs !== null && line.startMs > timeMs) break;
+      }
+      if (nextLoopLineId !== null) setLoopTimedLineId(nextLoopLineId);
+    }
+    setAudioCurrentTime(nextTime);
+    updateActiveTiming(nextTime);
+    if (shouldPlay) void audio.play();
+  };
+
+  const seekToTimedLine = (lineId: number) => {
+    if (!selectedUnit) return;
+    if (timingEditing) { setTimingEditLineId(lineId); return; }
+    const line = localUnitMedia[selectedUnit.id]?.alignment?.lines.find(
+      (item) => item.lineId === lineId,
+    );
+    if (line?.startMs !== null && line?.startMs !== undefined) {
+      handleTimedTargetClick(`line:${lineId}`, line.startMs / 1000);
+    }
+  };
+
+  const handleTimedTargetClick = (targetKey: string, timeSeconds: number) => {
+    if (timingEditing) {
+      const lineId = Number(targetKey.split(":")[1]);
+      if (Number.isFinite(lineId)) setTimingEditLineId(lineId);
+      return;
+    }
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (!audio.paused) {
+      armedTimedTargetRef.current = null;
+      seekAudio(timeSeconds);
+      return;
+    }
+    const shouldStart = armedTimedTargetRef.current === targetKey;
+    armedTimedTargetRef.current = shouldStart ? null : targetKey;
+    seekAudio(timeSeconds, shouldStart);
+  };
+
+  const moveByTimedItem = (kind: "line" | "word", direction: -1 | 1) => {
+    armedTimedTargetRef.current = null;
+    if (!selectedUnit) return;
+    const alignment = localUnitMedia[selectedUnit.id]?.alignment;
+    if (!alignment) return;
+    const timeMs = (audioRef.current?.currentTime ?? 0) * 1000;
+    const starts =
+      kind === "line"
+        ? alignment.lines.flatMap((line) =>
+            line.startMs === null ? [] : [line.startMs],
+          )
+        : alignment.lines.flatMap((line) =>
+            line.words.map((word) => word.startMs),
+          );
+    if (!starts.length) return;
+    const currentIndex = starts.findLastIndex((start) => start <= timeMs + 10);
+    let targetIndex: number;
+    if (direction < 0) {
+      const currentStart = starts[Math.max(currentIndex, 0)];
+      targetIndex =
+        currentIndex > 0 && timeMs - currentStart < 500
+          ? currentIndex - 1
+          : Math.max(currentIndex, 0);
+    } else {
+      targetIndex = Math.min(currentIndex + 1, starts.length - 1);
+    }
+    seekAudio(starts[targetIndex] / 1000);
+  };
+
+  const toggleCurrentLineLoop = () => {
+    if (!selectedUnit) return;
+    if (loopTimedLineId !== null) {
+      setLoopTimedLineId(null);
+      return;
+    }
+    const alignment = localUnitMedia[selectedUnit.id]?.alignment;
+    if (!alignment) return;
+    const fallbackLine = alignment.lines.find((line) => line.startMs !== null);
+    const lineId = activeTimedLineId ?? fallbackLine?.lineId;
+    if (lineId !== undefined) setLoopTimedLineId(lineId);
+  };
+
+  useEffect(() => {
+    const handlePlaybackShortcut = (event: KeyboardEvent) => {
+      if (currentView !== "reader" || !selectedUnit) return;
+      if (!localUnitMedia[selectedUnit.id]?.audioUrl) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.isContentEditable ||
+        target?.closest("input, textarea, select, button, [contenteditable='true']")
+      ) {
+        return;
+      }
+
+      if (event.code === "Space") {
+        event.preventDefault();
+        armedTimedTargetRef.current = null;
+        const audio = audioRef.current;
+        if (!audio) return;
+        if (audio.paused) void audio.play();
+        else audio.pause();
+        return;
+      }
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        moveByTimedItem("line", event.key === "ArrowLeft" ? -1 : 1);
+        return;
+      }
+      if (event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        toggleCurrentLineLoop();
+      }
+    };
+
+    window.addEventListener("keydown", handlePlaybackShortcut);
+    return () => window.removeEventListener("keydown", handlePlaybackShortcut);
+  });
+
+  const formatPlaybackTime = (seconds: number) => {
+    if (!Number.isFinite(seconds)) return "0:00";
+    const wholeSeconds = Math.max(0, Math.floor(seconds));
+    return `${Math.floor(wholeSeconds / 60)}:${String(wholeSeconds % 60).padStart(2, "0")}`;
   };
 
   const generateUnitField = async (
@@ -748,7 +1582,7 @@ export default function EnglishReadingApp() {
       lines: parsed,
     };
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("units")
       .insert([payload])
       .select();
@@ -759,6 +1593,45 @@ export default function EnglishReadingApp() {
       return;
     }
 
+    const insertedUnit = data?.[0] as UnitType | undefined;
+    let uploadedChanges: Partial<UnitType> = {};
+    if (insertedUnit && (newAlignmentFile || (newAudioFile && newUploadAudio))) {
+      try {
+        uploadedChanges = await uploadUnitMedia({
+          unitId: insertedUnit.id,
+          audioFile: newAudioFile,
+          uploadAudio: newUploadAudio,
+          alignmentFile: newAlignmentFile,
+          alignment: newAlignment,
+          existingAudioPath: null,
+        });
+      } catch (uploadError) {
+        console.error("unit media upload error", uploadError);
+        alert(
+          `ユニットは追加されましたが、ファイル保存に失敗しました: ${
+            uploadError instanceof Error ? uploadError.message : "不明なエラー"
+          }`,
+        );
+      }
+    }
+    if (insertedUnit && (newAudioUrl || newAlignment)) {
+      const savedAudioPath = uploadedChanges.audio_path;
+      const savedAudioUrl = savedAudioPath
+        ? supabase.storage
+            .from(UNIT_MEDIA_BUCKET)
+            .getPublicUrl(savedAudioPath).data.publicUrl
+        : newAudioUrl;
+      setLocalUnitMedia((current) => ({
+        ...current,
+        [insertedUnit.id]: {
+          audioName: newAudioName,
+          audioUrl: savedAudioUrl,
+          alignmentName: newAlignmentName,
+          alignment: newAlignment,
+        },
+      }));
+    }
+
     await loadAll();
     setNewUnitTitle("");
     setNewUnitEnglish("");
@@ -766,6 +1639,14 @@ export default function EnglishReadingApp() {
     setNewUnitPhonetic("");
     setNewUnitPhoneticReview([]);
     setNewUnitFolder("");
+    setNewAudioName("");
+    setNewAudioUrl("");
+    setNewAudioFile(null);
+    setNewUploadAudio(false);
+    setNewAlignmentName("");
+    setNewAlignment(null);
+    setNewAlignmentFile(null);
+    setNewMediaError("");
     setCurrentView("list");
   };
   const handleTextSelection = (lineId: number) => {
@@ -958,10 +1839,36 @@ export default function EnglishReadingApp() {
     setIsSelectionPanelOpen(true);
   };
 
+  const compareLibraryItems = (
+    first: { name: string; created_at?: string },
+    second: { name: string; created_at?: string },
+  ) => {
+    const direction = librarySortDirection === "asc" ? 1 : -1;
+    if (librarySortKey === "name") {
+      return first.name.localeCompare(second.name, "ja", {
+        numeric: true,
+        sensitivity: "base",
+      }) * direction;
+    }
+    return (
+      ((new Date(first.created_at ?? 0).getTime() || 0) -
+        (new Date(second.created_at ?? 0).getTime() || 0)) *
+      direction
+    );
+  };
+
   const getFilteredUnits = () =>
-    selectedFolder
-      ? units.filter((u) => u.folder_id === selectedFolder)
-      : units;
+    units.filter((unit) => (unit.folder_id ?? null) === selectedFolder).sort((first, second) =>
+      compareLibraryItems(
+        { name: first.title, created_at: first.created_at },
+        { name: second.title, created_at: second.created_at },
+      ),
+    );
+
+  const getVisibleFolders = () =>
+    getFolderChildren(selectedFolder).sort((first, second) =>
+      compareLibraryItems(first, second),
+    );
 
   const getFolderChildren = (parentId: string | null) =>
     folders.filter((folder) => (folder.parent_id ?? null) === parentId);
@@ -982,20 +1889,6 @@ export default function EnglishReadingApp() {
       });
     }
     return descendants;
-  };
-
-  const getFolderPath = (folderId: string) => {
-    const names: string[] = [];
-    const visited = new Set<string>();
-    let currentId: string | null = folderId;
-    while (currentId && !visited.has(currentId)) {
-      visited.add(currentId);
-      const folder = folders.find((item) => item.id === currentId);
-      if (!folder) break;
-      names.unshift(folder.name);
-      currentId = folder.parent_id ?? null;
-    }
-    return names.join(" / ");
   };
 
   const getFolderOptions = () => {
@@ -1073,6 +1966,217 @@ export default function EnglishReadingApp() {
     }
   };
 
+  const openUnit = (unit: UnitType) => {
+    window.history.pushState(
+      { readingUnitId: unit.id },
+      "",
+      `?unit=${encodeURIComponent(unit.id)}`,
+    );
+    setSelectedUnit(unit);
+    setShowAllJapanese(false);
+    setShowAllPhonetic(false);
+    setFollowPlayback(true);
+    setCurrentView("reader");
+  };
+
+  const beginLibraryRename = (item: LibraryItemRef, currentName: string) => {
+    setRenamingLibraryItem(item);
+    setRenamingLibraryValue(currentName);
+    setLibraryContextMenu(null);
+  };
+
+  const saveLibraryRename = async () => {
+    if (!renamingLibraryItem) return;
+    const name = renamingLibraryValue.trim();
+    if (!name) {
+      setRenamingLibraryItem(null);
+      return;
+    }
+    if (renamingLibraryItem.type === "folder") {
+      const { error } = await supabase
+        .from("folders")
+        .update({ name })
+        .eq("id", renamingLibraryItem.id);
+      if (error) {
+        alert(`フォルダー名の変更に失敗しました: ${error.message}`);
+        return;
+      }
+      setFolders((current) =>
+        current.map((folder) =>
+          folder.id === renamingLibraryItem.id ? { ...folder, name } : folder,
+        ),
+      );
+    } else {
+      const { error } = await supabase
+        .from("units")
+        .update({ title: name })
+        .eq("id", renamingLibraryItem.id);
+      if (error) {
+        alert(`ユニット名の変更に失敗しました: ${error.message}`);
+        return;
+      }
+      setUnits((current) =>
+        current.map((unit) =>
+          unit.id === renamingLibraryItem.id
+            ? { ...unit, title: name, updated_at: new Date().toISOString() }
+            : unit,
+        ),
+      );
+    }
+    setRenamingLibraryItem(null);
+  };
+
+  const deleteUnit = async (unit: UnitType) => {
+    if (!window.confirm(`「${unit.title}」を削除しますか？`)) return;
+    const { error } = await supabase.from("units").delete().eq("id", unit.id);
+    if (error) {
+      alert(`ユニットの削除に失敗しました: ${error.message}`);
+      return;
+    }
+    void removeUnitMediaFiles([unit]);
+    setUnits((current) => current.filter((item) => item.id !== unit.id));
+    setSelectedLibraryItem(null);
+    setLibraryContextMenu(null);
+  };
+
+  const handleLibraryItemClick = (
+    event: React.MouseEvent,
+    item: LibraryItemRef,
+    currentName: string,
+  ) => {
+    if (event.detail !== 1) return;
+    const isAlreadySelected =
+      selectedLibraryItem?.type === item.type &&
+      selectedLibraryItem.id === item.id;
+    setSelectedLibraryItem(item);
+    if (!isAlreadySelected) return;
+    if (libraryRenameTimerRef.current !== null) {
+      window.clearTimeout(libraryRenameTimerRef.current);
+    }
+    libraryRenameTimerRef.current = window.setTimeout(() => {
+      beginLibraryRename(item, currentName);
+      libraryRenameTimerRef.current = null;
+    }, 450);
+  };
+
+  const cancelPendingLibraryRename = () => {
+    if (libraryRenameTimerRef.current !== null) {
+      window.clearTimeout(libraryRenameTimerRef.current);
+      libraryRenameTimerRef.current = null;
+    }
+  };
+
+  const openLibraryFolder = (folderId: string | null) => {
+    cancelPendingLibraryRename();
+    setSelectedFolder(folderId);
+    const firstFolder = getFolderChildren(folderId).sort(compareLibraryItems)[0];
+    const firstUnit = units
+      .filter((unit) => (unit.folder_id ?? null) === folderId)
+      .sort((first, second) => compareLibraryItems(
+        { name: first.title, created_at: first.created_at },
+        { name: second.title, created_at: second.created_at },
+      ))[0];
+    setSelectedLibraryItem(firstFolder
+      ? { type: "folder", id: firstFolder.id }
+      : firstUnit ? { type: "unit", id: firstUnit.id } : null);
+    libraryContentsRef.current?.focus();
+  };
+
+  const handleTreeKeyboard = (event: React.KeyboardEvent) => {
+    if ((event.target as HTMLElement).closest("input, textarea, select")) return;
+    const visible: FolderType[] = [];
+    const visited = new Set<string>();
+    const walk = (parentId: string | null) => {
+      getFolderChildren(parentId).forEach((folder) => {
+        if (visited.has(folder.id)) return;
+        visited.add(folder.id);
+        visible.push(folder);
+        if (expandedFolderIds.has(folder.id)) walk(folder.id);
+      });
+    };
+    walk(null);
+    if (!visible.length) return;
+    const index = visible.findIndex((folder) => folder.id === focusedTreeFolderId);
+    const current = visible[Math.max(0, index)];
+    let next = current;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      next = visible[Math.min(visible.length - 1, Math.max(0,
+        index < 0 ? 0 : index + (event.key === "ArrowDown" ? 1 : -1)))];
+    } else if (event.key === "ArrowRight") {
+      const children = getFolderChildren(current.id);
+      if (expandedFolderIds.has(current.id) && children.length) next = children[0];
+      else setExpandedFolderIds((previous) => new Set(previous).add(current.id));
+    } else if (event.key === "ArrowLeft") {
+      if (expandedFolderIds.has(current.id)) {
+        setExpandedFolderIds((previous) => {
+          const changed = new Set(previous);
+          changed.delete(current.id);
+          return changed;
+        });
+      } else next = folders.find((folder) => folder.id === current.parent_id) ?? current;
+    } else if (event.key === "Enter") {
+      openLibraryFolder(current.id);
+    } else if (event.key === "Tab" && !event.shiftKey) {
+      libraryContentsRef.current?.focus();
+    } else return;
+    event.preventDefault();
+    event.stopPropagation();
+    setFocusedTreeFolderId(next.id);
+  };
+
+  useEffect(() => {
+    const handleLibraryKeyboard = (event: KeyboardEvent) => {
+      if (currentView !== "list") return;
+      const target = event.target as HTMLElement | null;
+      if (target && folderTreeRef.current?.contains(target)) return;
+      if (
+        target?.isContentEditable ||
+        target?.closest("input, textarea, select, button, [contenteditable='true']")
+      ) {
+        return;
+      }
+      const visibleItems: LibraryItemRef[] = [
+        ...getVisibleFolders().map((folder) => ({ type: "folder" as const, id: folder.id })),
+        ...getFilteredUnits().map((unit) => ({ type: "unit" as const, id: unit.id })),
+      ];
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const index = visibleItems.findIndex((item) =>
+          item.id === selectedLibraryItem?.id && item.type === selectedLibraryItem.type);
+        const next = visibleItems[Math.min(visibleItems.length - 1, Math.max(0,
+          index < 0 ? 0 : index + (event.key === "ArrowDown" ? 1 : -1)))];
+        if (next) setSelectedLibraryItem(next);
+        return;
+      }
+      if (!selectedLibraryItem) return;
+      const folder =
+        selectedLibraryItem.type === "folder"
+          ? folders.find((item) => item.id === selectedLibraryItem.id)
+          : null;
+      const unit =
+        selectedLibraryItem.type === "unit"
+          ? units.find((item) => item.id === selectedLibraryItem.id)
+          : null;
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (folder) openLibraryFolder(folder.id);
+        if (unit) openUnit(unit);
+      } else if (event.key === "F2") {
+        event.preventDefault();
+        if (folder) beginLibraryRename(selectedLibraryItem, folder.name);
+        if (unit) beginLibraryRename(selectedLibraryItem, unit.title);
+      } else if (event.key === "Delete") {
+        event.preventDefault();
+        if (folder && window.confirm(`「${folder.name}」を削除しますか？`)) {
+          void deleteFolder(folder.id);
+        }
+        if (unit) void deleteUnit(unit);
+      }
+    };
+    window.addEventListener("keydown", handleLibraryKeyboard);
+    return () => window.removeEventListener("keydown", handleLibraryKeyboard);
+  });
+
   const renderFolderTree = (
     parentId: string | null,
     depth = 0,
@@ -1113,7 +2217,7 @@ export default function EnglishReadingApp() {
               event.stopPropagation();
               setFolderMenuId(folder.id);
             }}
-            className={`relative flex items-center rounded text-sm ${
+            className={`relative flex items-center rounded text-sm ${focusedTreeFolderId === folder.id ? "ring-1 ring-blue-300 bg-blue-50" : ""} ${
               isDropTarget ? "ring-2 ring-blue-400 bg-blue-50" : ""
             }`}
             style={{ paddingLeft: `${depth * 14}px` }}
@@ -1138,7 +2242,9 @@ export default function EnglishReadingApp() {
             <button
               type="button"
               onClick={() => {
+                setFocusedTreeFolderId(folder.id);
                 setSelectedFolder(folder.id);
+                folderTreeRef.current?.focus();
                 if (children.length > 0) {
                   setExpandedFolderIds((current) =>
                     new Set(current).add(folder.id),
@@ -1226,6 +2332,7 @@ export default function EnglishReadingApp() {
       );
     });
   const startEditUnit = (unit: UnitType) => {
+    const media = localUnitMedia[unit.id];
     setEditingUnit(unit);
     setEditUnitTitle(unit.title);
     setEditUnitFolder(unit.folder_id || "");
@@ -1233,6 +2340,18 @@ export default function EnglishReadingApp() {
     setEditUnitJapanese(unit.lines.map((l) => l.japanese).join("\n"));
     setEditUnitPhonetic(unit.lines.map((l) => l.phonetic).join("\n"));
     setEditUnitPhoneticReview([]);
+    setEditAudioName(media?.audioName ?? "");
+    setEditAudioUrl(media?.audioUrl ?? "");
+    setEditAudioFile(null);
+    setRemoveEditAudio(false);
+    setRemoveEditAlignment(false);
+    setEditMediaDuration(undefined);
+    setEditUploadAudio(false);
+    setEditAlignmentName(media?.alignmentName ?? "");
+    setEditAlignment(media?.alignment ?? null);
+    setEditAlignmentFile(null);
+    setEditMediaError("");
+    setEditMediaDirty(false);
     setCurrentView("edit");
   };
 
@@ -1243,8 +2362,16 @@ export default function EnglishReadingApp() {
     ) {
       return false;
     }
+    if (
+      editingUnit &&
+      editAudioUrl &&
+      editAudioUrl !== localUnitMedia[editingUnit.id]?.audioUrl
+    ) {
+      URL.revokeObjectURL(editAudioUrl);
+    }
     setCurrentView("list");
     setEditingUnit(null);
+    setEditMediaDirty(false);
     return true;
   };
 
@@ -1389,27 +2516,90 @@ export default function EnglishReadingApp() {
     );
     const updatedUnit = {
       ...editingUnit,
+      ...(removeEditAudio ? { audio_path: null, audio_name: null } : {}),
+      ...(removeEditAlignment ? {
+        alignment_path: null, alignment_name: null, alignment_data: null, alignment_edits: null,
+      } : {}),
       title: editUnitTitle.trim() || "無題",
       folder_id: editUnitFolder || null,
       lines: parsed,
     };
-    await supabase.from("units").update(updatedUnit).eq("id", editingUnit.id);
-    setUnits(units.map((u) => (u.id === editingUnit.id ? updatedUnit : u)));
+    const { error: updateError } = await supabase
+      .from("units")
+      .update(updatedUnit)
+      .eq("id", editingUnit.id);
+    if (updateError) {
+      alert(`ユニットの更新に失敗しました: ${updateError.message}`);
+      return;
+    }
+    let uploadedChanges: Partial<UnitType> = {};
+    try {
+      uploadedChanges = await uploadUnitMedia({
+        unitId: editingUnit.id,
+        audioFile: editAudioFile,
+        uploadAudio: editUploadAudio,
+        alignmentFile: editAlignmentFile,
+        alignment: editAlignment,
+        existingAudioPath: editingUnit.audio_path,
+      });
+    } catch (uploadError) {
+      console.error("unit media upload error", uploadError);
+      alert(
+        `テキストは保存されましたが、ファイル保存に失敗しました: ${
+          uploadError instanceof Error ? uploadError.message : "不明なエラー"
+        }`,
+      );
+      return;
+    }
+    const savedUnit = {
+      ...updatedUnit,
+      ...uploadedChanges,
+      updated_at: new Date().toISOString(),
+    } as UnitType;
+    setUnits(units.map((u) => (u.id === editingUnit.id ? savedUnit : u)));
+    {
+      const savedAudioUrl = uploadedChanges.audio_path
+        ? supabase.storage
+            .from(UNIT_MEDIA_BUCKET)
+            .getPublicUrl(uploadedChanges.audio_path).data.publicUrl
+        : editAudioUrl;
+      setLocalUnitMedia((current) => ({
+        ...current,
+        [editingUnit.id]: {
+          audioName: editAudioName,
+          audioUrl: savedAudioUrl,
+          alignmentName: editAlignmentName,
+          alignment: editAlignment,
+        },
+      }));
+    }
+    const deletedPaths = [
+      removeEditAudio ? editingUnit.audio_path : null,
+      removeEditAlignment ? editingUnit.alignment_path : null,
+    ].filter((path): path is string => Boolean(path));
+    if (deletedPaths.length) {
+      const { error } = await supabase.storage.from(UNIT_MEDIA_BUCKET).remove(deletedPaths);
+      if (error) {
+        setEditMediaError(`ユニットの変更は保存されましたが、クラウドのファイル削除に失敗しました: ${error.message}`);
+        return;
+      }
+    }
     setCurrentView("list");
     setEditingUnit(null);
+    setEditMediaDirty(false);
   };
 
   // === ここからUI部分 ===
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
+    <div className={`${currentView === "reader" ? "flex h-dvh flex-col overflow-hidden" : "min-h-screen"} bg-gradient-to-br from-blue-50 to-indigo-100 p-6`}>
       <div
         className={
           currentView === "reader" && hasReaderSidePanel
-            ? "mx-auto max-w-none"
-            : "mx-auto max-w-7xl"
+            ? "mx-auto flex min-h-0 w-full max-w-none flex-1 flex-col"
+            : currentView === "reader" ? "mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col" : "mx-auto max-w-7xl"
         }
       >
-        <div className="flex justify-between items-center mb-8">
+        <div className={`flex shrink-0 justify-between items-center ${currentView === "reader" ? "mb-3" : "mb-8"}`}>
           <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-3">
             <BookOpen size={36} className="text-blue-600" />
             長文学習
@@ -1471,8 +2661,28 @@ export default function EnglishReadingApp() {
                 新規ユニット追加
               </button>
             </div>
-            <div className="grid gap-4 md:grid-cols-[240px_minmax(0,1fr)] items-start">
-              <aside className="bg-white p-3 rounded-lg shadow-md md:sticky md:top-4">
+            <div className={`grid items-start gap-2 sm:gap-4 ${
+              isFolderSidebarCollapsed
+                ? "grid-cols-[36px_minmax(0,1fr)]"
+                : "grid-cols-[140px_minmax(0,1fr)] sm:grid-cols-[220px_minmax(0,1fr)]"
+            }`}>
+              <aside
+                ref={folderTreeRef}
+                tabIndex={0}
+                onKeyDown={handleTreeKeyboard}
+                className="sticky top-4 min-w-0 rounded-lg bg-white p-2 shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-300"
+                aria-label="フォルダー一覧"
+              >
+                <button
+                  type="button"
+                  title={isFolderSidebarCollapsed ? "フォルダー一覧を展開" : "フォルダー一覧を折りたたむ"}
+                  aria-expanded={!isFolderSidebarCollapsed}
+                  onClick={() => setIsFolderSidebarCollapsed((current) => !current)}
+                  className="mb-2 rounded p-1 text-gray-500 hover:bg-gray-100"
+                >
+                  {isFolderSidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+                </button>
+                {!isFolderSidebarCollapsed && <>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="font-semibold text-gray-700 flex items-center gap-2">
                     <Folder size={20} />
@@ -1506,8 +2716,7 @@ export default function EnglishReadingApp() {
                 )}
 
                 <div className="space-y-1">
-                  <button
-                    onClick={() => setSelectedFolder(null)}
+                  <div
                     onDragOver={(event) => {
                       event.preventDefault();
                       event.dataTransfer.dropEffect = "move";
@@ -1522,89 +2731,352 @@ export default function EnglishReadingApp() {
                       event.preventDefault();
                       void moveLibraryItem(null);
                     }}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded text-sm ${
+                    className={`min-h-8 rounded text-sm ${
                       libraryDropTarget === "root"
                         ? "bg-blue-50 text-blue-800 ring-2 ring-blue-400"
-                        : selectedFolder === null
-                        ? "bg-blue-100 text-blue-800 font-medium"
-                        : "text-gray-700 hover:bg-gray-100"
+                        : "text-gray-700"
                     }`}
                   >
-                    <span>すべて・最上位</span>
-                    <span className="text-xs opacity-70">{units.length}</span>
-                  </button>
-                  {renderFolderTree(null)}
+                    {renderFolderTree(null)}
+                  </div>
                 </div>
+                </>}
               </aside>
 
-              <main>
-                {getFilteredUnits().length === 0 ? (
-              <div className="text-center py-12 text-gray-500 bg-white rounded-lg shadow-md">
-                <BookOpen size={48} className="mx-auto mb-4 opacity-50" />
-                <p>ユニットがありません。新規追加してください。</p>
-              </div>
-                ) : (
-              <div className="grid gap-4">
-                {getFilteredUnits().map((unit) => (
-                  <div
-                    key={unit.id}
-                    draggable
-                    onDragStart={(event) => {
-                      event.dataTransfer.effectAllowed = "move";
-                      setDraggedLibraryItem({ type: "unit", id: unit.id });
-                    }}
-                    onDragEnd={() => {
-                      setDraggedLibraryItem(null);
-                      setLibraryDropTarget(null);
-                    }}
-                    className="cursor-grab bg-white p-6 rounded-lg shadow-md border border-gray-200 active:cursor-grabbing"
-                  >
-                    <div className="flex justify-between items-start gap-4">
-                      <div className="flex-1">
-                        <h3 className="text-xl font-semibold text-gray-800 mb-2">
-                          {unit.title}
-                        </h3>
-                        <p className="text-sm text-gray-600">
-                          {unit.lines.length} 行
-                        </p>
-                        {unit.folder_id && (
-                          <span className="inline-block mt-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
-                            {getFolderPath(unit.folder_id)}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => startEditUnit(unit)}
-                          className="bg-yellow-500 text-white px-4 py-2 rounded-lg hover:bg-yellow-600 font-medium"
-                        >
-                          編集
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            window.history.pushState(
-                              { readingUnitId: unit.id },
-                              "",
-                              `?unit=${encodeURIComponent(unit.id)}`,
-                            );
-                            setSelectedUnit(unit);
-                            setShowAllJapanese(false);
-                            setShowAllPhonetic(false);
-                            setCurrentView("reader");
-                          }}
-                          className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 font-medium"
-                        >
-                          学習
-                        </button>
-                      </div>
-                    </div>
+              <main
+                ref={libraryContentsRef}
+                tabIndex={0}
+                aria-label="フォルダーの内容"
+                onKeyDown={(event) => {
+                  if (event.key === "Tab" && event.shiftKey && !isFolderSidebarCollapsed) {
+                    event.preventDefault();
+                    folderTreeRef.current?.focus();
+                  }
+                }}
+                className="min-w-0 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm"
+                onClick={(event) => {
+                  if (event.currentTarget === event.target) {
+                    setSelectedLibraryItem(null);
+                  }
+                }}
+              >
+                {selectedFolder && (
+                  <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2 text-sm">
+                    <button
+                      type="button"
+                      title="親フォルダーへ戻る"
+                      onClick={() => {
+                        const folder = folders.find((item) => item.id === selectedFolder);
+                        openLibraryFolder(folder?.parent_id ?? null);
+                        setSelectedLibraryItem({ type: "folder", id: selectedFolder });
+                      }}
+                      className="rounded p-1 text-gray-500 hover:bg-gray-100"
+                    >
+                      <ArrowLeft size={16} />
+                    </button>
+                    <span className="truncate text-gray-700">
+                      {folders.find((item) => item.id === selectedFolder)?.name}
+                    </span>
                   </div>
-                ))}
-              </div>
+                )}
+                <div className="grid grid-cols-[minmax(0,1fr)_90px_110px] border-b border-gray-200 bg-gray-50 px-3 text-xs font-medium text-gray-500">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (librarySortKey === "name") {
+                        setLibrarySortDirection((current) =>
+                          current === "asc" ? "desc" : "asc",
+                        );
+                      } else {
+                        setLibrarySortKey("name");
+                        setLibrarySortDirection("asc");
+                      }
+                    }}
+                    className="py-2 text-left hover:text-gray-900"
+                  >
+                    名前 {librarySortKey === "name" ? (librarySortDirection === "asc" ? "↑" : "↓") : ""}
+                  </button>
+                  <span className="py-2 text-right">行数</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (librarySortKey === "created") {
+                        setLibrarySortDirection((current) =>
+                          current === "asc" ? "desc" : "asc",
+                        );
+                      } else {
+                        setLibrarySortKey("created");
+                        setLibrarySortDirection("desc");
+                      }
+                    }}
+                    className="py-2 text-right hover:text-gray-900"
+                  >
+                    作成日 {librarySortKey === "created" ? (librarySortDirection === "asc" ? "↑" : "↓") : ""}
+                  </button>
+                </div>
+
+                {getVisibleFolders().length === 0 &&
+                getFilteredUnits().length === 0 ? (
+                  <div className="py-12 text-center text-sm text-gray-500">
+                    <BookOpen size={36} className="mx-auto mb-3 opacity-30" />
+                    <p>この場所には項目がありません。</p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-gray-100">
+                    {getVisibleFolders().map((folder) => {
+                      const item: LibraryItemRef = { type: "folder", id: folder.id };
+                      const selected =
+                        selectedLibraryItem?.type === "folder" &&
+                        selectedLibraryItem.id === folder.id;
+                      const renaming =
+                        renamingLibraryItem?.type === "folder" &&
+                        renamingLibraryItem.id === folder.id;
+                      return (
+                        <div
+                          key={`content-folder-${folder.id}`}
+                          draggable={!renaming}
+                          onDragStart={(event) => {
+                            event.dataTransfer.effectAllowed = "move";
+                            setDraggedLibraryItem({ type: "folder", id: folder.id });
+                          }}
+                          onDragOver={(event) => event.preventDefault()}
+                          onDrop={(event) => {
+                            event.preventDefault();
+                            void moveLibraryItem(folder.id);
+                          }}
+                          onClick={(event) => handleLibraryItemClick(event, item, folder.name)}
+                          onDoubleClick={() => {
+                            cancelPendingLibraryRename();
+                            openLibraryFolder(folder.id);
+                            setExpandedFolderIds((current) => new Set(current).add(folder.id));
+                          }}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setSelectedLibraryItem(item);
+                            setLibraryContextMenu({ ...item, x: event.clientX, y: event.clientY });
+                          }}
+                          className={`grid h-10 cursor-default grid-cols-[minmax(0,1fr)_90px_110px] items-center px-3 text-sm ${
+                            selected ? "bg-blue-100 text-blue-950" : "hover:bg-gray-50"
+                          }`}
+                        >
+                          <div className="flex min-w-0 items-center gap-2">
+                            <Folder size={17} className="shrink-0 text-amber-500" />
+                            {renaming ? (
+                              <input
+                                autoFocus
+                                value={renamingLibraryValue}
+                                onChange={(event) => setRenamingLibraryValue(event.target.value)}
+                                onBlur={() => void saveLibraryRename()}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") event.currentTarget.blur();
+                                  if (event.key === "Escape") setRenamingLibraryItem(null);
+                                }}
+                                className="min-w-0 flex-1 border border-blue-500 bg-white px-1 outline-none"
+                              />
+                            ) : (
+                              <span className="truncate">{folder.name}</span>
+                            )}
+                          </div>
+                          <span />
+                          <span className="text-right text-xs text-gray-500">
+                            {folder.created_at
+                              ? new Date(folder.created_at).toLocaleDateString("ja-JP")
+                              : ""}
+                          </span>
+                        </div>
+                      );
+                    })}
+
+                    {getFilteredUnits().map((unit) => {
+                      const item: LibraryItemRef = { type: "unit", id: unit.id };
+                      const selected =
+                        selectedLibraryItem?.type === "unit" &&
+                        selectedLibraryItem.id === unit.id;
+                      const renaming =
+                        renamingLibraryItem?.type === "unit" &&
+                        renamingLibraryItem.id === unit.id;
+                      return (
+                        <div
+                          key={unit.id}
+                          draggable={!renaming}
+                          onDragStart={(event) => {
+                            event.dataTransfer.effectAllowed = "move";
+                            setDraggedLibraryItem({ type: "unit", id: unit.id });
+                          }}
+                          onDragEnd={() => {
+                            setDraggedLibraryItem(null);
+                            setLibraryDropTarget(null);
+                          }}
+                          onClick={(event) => handleLibraryItemClick(event, item, unit.title)}
+                          onDoubleClick={() => {
+                            cancelPendingLibraryRename();
+                            openUnit(unit);
+                          }}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setSelectedLibraryItem(item);
+                            setLibraryContextMenu({ ...item, x: event.clientX, y: event.clientY });
+                          }}
+                          className={`grid h-10 cursor-default grid-cols-[minmax(0,1fr)_90px_110px] items-center px-3 text-sm ${
+                            selected ? "bg-blue-100 text-blue-950" : "hover:bg-gray-50"
+                          }`}
+                        >
+                          <div className="flex min-w-0 items-center gap-2">
+                            <BookOpen size={16} className="shrink-0 text-blue-500" />
+                            {renaming ? (
+                              <input
+                                autoFocus
+                                value={renamingLibraryValue}
+                                onChange={(event) => setRenamingLibraryValue(event.target.value)}
+                                onBlur={() => void saveLibraryRename()}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") event.currentTarget.blur();
+                                  if (event.key === "Escape") setRenamingLibraryItem(null);
+                                }}
+                                className="min-w-0 flex-1 border border-blue-500 bg-white px-1 outline-none"
+                              />
+                            ) : (
+                              <span className="truncate">{unit.title}</span>
+                            )}
+                          </div>
+                          <span className="text-right text-xs text-gray-500">
+                            {unit.lines.length}
+                          </span>
+                          <span className="text-right text-xs text-gray-500">
+                            {unit.created_at
+                              ? new Date(unit.created_at).toLocaleDateString("ja-JP")
+                              : ""}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {selectedFolder === null && recentUnits.length > 0 && (
+                  <section className="mt-6 border-t border-gray-200 pb-2">
+                    <h3 className="px-3 py-2 text-xs font-medium text-gray-500">
+                      最近編集した項目
+                    </h3>
+                    {recentUnits.map((unit) => {
+                      const id = unit.id;
+                      return (
+                        <div
+                          key={`recent-${id}`}
+                          onClick={() => setSelectedLibraryItem({ type: "unit", id })}
+                          onDoubleClick={() => openUnit(unit)}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setLibraryContextMenu({ type: "unit", id, x: event.clientX, y: event.clientY });
+                          }}
+                          className={`flex h-9 cursor-default items-center gap-2 px-3 text-sm ${
+                            selectedLibraryItem?.type === "unit" && selectedLibraryItem.id === id
+                              ? "bg-blue-100 text-blue-950"
+                              : "hover:bg-gray-50"
+                          }`}
+                        >
+                          <BookOpen size={16} className="shrink-0 text-gray-400" />
+                          <span className="min-w-0 flex-1 truncate">{unit.title}</span>
+                          <span className="max-w-[40%] truncate text-xs text-gray-400">
+                            {folders.find((folder) => folder.id === unit.folder_id)?.name ?? ""}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </section>
                 )}
               </main>
             </div>
+
+            {libraryContextMenu && (
+              <div
+                className="fixed z-[80] w-44 rounded-md border border-gray-200 bg-white py-1 text-sm shadow-xl"
+                style={{ left: libraryContextMenu.x, top: libraryContextMenu.y }}
+                onClick={(event) => event.stopPropagation()}
+              >
+                {libraryContextMenu.type === "unit" ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const unit = units.find((item) => item.id === libraryContextMenu.id);
+                        if (unit) openUnit(unit);
+                        setLibraryContextMenu(null);
+                      }}
+                      className="block w-full px-3 py-1.5 text-left hover:bg-gray-100"
+                    >
+                      開く
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const unit = units.find((item) => item.id === libraryContextMenu.id);
+                        if (unit) startEditUnit(unit);
+                        setLibraryContextMenu(null);
+                      }}
+                      className="block w-full px-3 py-1.5 text-left hover:bg-gray-100"
+                    >
+                      編集
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const unit = units.find((item) => item.id === libraryContextMenu.id);
+                        if (unit) beginLibraryRename({ type: "unit", id: unit.id }, unit.title);
+                      }}
+                      className="block w-full px-3 py-1.5 text-left hover:bg-gray-100"
+                    >
+                      名前を変更
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const unit = units.find((item) => item.id === libraryContextMenu.id);
+                        if (unit) void deleteUnit(unit);
+                      }}
+                      className="block w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50"
+                    >
+                      削除
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        openLibraryFolder(libraryContextMenu.id);
+                        setLibraryContextMenu(null);
+                      }}
+                      className="block w-full px-3 py-1.5 text-left hover:bg-gray-100"
+                    >
+                      開く
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const folder = folders.find((item) => item.id === libraryContextMenu.id);
+                        if (folder) beginLibraryRename({ type: "folder", id: folder.id }, folder.name);
+                      }}
+                      className="block w-full px-3 py-1.5 text-left hover:bg-gray-100"
+                    >
+                      名前を変更
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const folder = folders.find((item) => item.id === libraryContextMenu.id);
+                        if (folder && window.confirm(`「${folder.name}」を削除しますか？`)) {
+                          void deleteFolder(folder.id);
+                        }
+                        setLibraryContextMenu(null);
+                      }}
+                      className="block w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50"
+                    >
+                      削除
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -1655,6 +3127,27 @@ export default function EnglishReadingApp() {
                 </select>
               </div>
 
+              <MediaFields
+                audioName={newAudioName} audioUrl={newAudioUrl}
+                alignmentName={newAlignmentName} alignment={newAlignment}
+                error={newMediaError} uploadAudio={newUploadAudio}
+                onUploadAudio={setNewUploadAudio}
+                onAudio={handleNewAudioFile}
+                onAlignment={(file) => void handleNewAlignmentFile(file)}
+                duration={newMediaDuration} onDuration={setNewMediaDuration}
+                onRemoveAudio={() => {
+                  if (!window.confirm("選択した音声を削除しますか？")) return;
+                  if (newAudioUrl.startsWith("blob:")) URL.revokeObjectURL(newAudioUrl);
+                  setNewAudioName(""); setNewAudioUrl(""); setNewAudioFile(null);
+                  setNewMediaDuration(undefined); setNewUploadAudio(false);
+                }}
+                onRemoveAlignment={() => {
+                  if (!window.confirm("選択したJSONを削除しますか？")) return;
+                  setNewAlignmentName(""); setNewAlignment(null); setNewAlignmentFile(null);
+                  setNewMediaError("");
+                }}
+              />
+
               <div className="space-y-3">
                 <div>
                   <div className="mb-1 flex items-center justify-between gap-3">
@@ -1683,10 +3176,7 @@ export default function EnglishReadingApp() {
                   </div>
                   <textarea
                     value={newUnitEnglish}
-                    onChange={(e) => {
-                      setNewUnitEnglish(e.target.value);
-                      setNewUnitPhoneticReview([]);
-                    }}
+                    onChange={(e) => handleNewUnitEnglishChange(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
                   />
                 </div>
@@ -1766,7 +3256,7 @@ export default function EnglishReadingApp() {
         )}
         {/* === ユニット編集 === */}
         {currentView === "edit" && editingUnit && (
-          <div className="max-w-4xl mx-auto">
+          <div className="max-w-4xl mx-auto pb-24">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold text-gray-800">ユニット編集</h2>
               <button
@@ -1777,7 +3267,7 @@ export default function EnglishReadingApp() {
               </button>
             </div>
 
-            <div className="bg-white p-6 rounded-lg shadow-md space-y-4">
+            <div className="flex flex-col gap-4 rounded-lg bg-white p-6 shadow-md">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   タイトル
@@ -1808,43 +3298,9 @@ export default function EnglishReadingApp() {
                 </select>
               </div>
 
-              <div className="space-y-3">
-                <div>
-                  <div className="mb-1 flex items-center justify-between gap-3">
-                    <label className="text-xs font-medium text-gray-600">
-                      英文
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        generateBothUnitFields(
-                          editUnitEnglish,
-                          editUnitJapanese,
-                          editUnitPhonetic,
-                          setEditUnitJapanese,
-                          setEditUnitPhonetic,
-                          setEditUnitPhoneticReview,
-                        )
-                      }
-                      disabled={generatingUnitField !== null}
-                      className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {generatingUnitField === "both"
-                        ? "生成中..."
-                        : "和訳＋発音をAI生成"}
-                    </button>
-                  </div>
-                  <textarea
-                    value={editUnitEnglish}
-                    onChange={(e) => {
-                      setEditUnitEnglish(e.target.value);
-                      setEditUnitPhoneticReview([]);
-                    }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-40"
-                  />
-                </div>
+              <div className="order-2 flex flex-col gap-3">
 
-                <div>
+                <div className="order-2">
                   <div className="mb-1 flex items-center justify-between gap-3">
                     <label className="text-xs font-medium text-gray-600">
                       和訳
@@ -1874,55 +3330,101 @@ export default function EnglishReadingApp() {
                   />
                 </div>
 
-                <div>
+                <div className="order-1">
                   <div className="mb-1 flex items-center justify-between gap-3">
                     <label className="text-xs font-medium text-gray-600">
-                      発音記号
+                      原文・発音記号
                     </label>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        generateUnitField(
-                          "phonetic",
-                          editUnitEnglish,
-                          editUnitPhonetic,
-                          setEditUnitPhonetic,
-                          setEditUnitPhoneticReview,
-                        )
-                      }
-                      disabled={generatingUnitField !== null}
-                      className="rounded-lg border border-blue-600 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {generatingUnitField === "phonetic"
-                        ? "生成中..."
-                        : "AIで生成"}
-                    </button>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          generateUnitField(
+                            "phonetic",
+                            editUnitEnglish,
+                            editUnitPhonetic,
+                            setEditUnitPhonetic,
+                            setEditUnitPhoneticReview,
+                          )
+                        }
+                        disabled={generatingUnitField !== null}
+                        className="rounded-lg border border-blue-600 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {generatingUnitField === "phonetic"
+                          ? "生成中..."
+                          : "発音をAI生成"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          generateBothUnitFields(
+                            editUnitEnglish,
+                            editUnitJapanese,
+                            editUnitPhonetic,
+                            setEditUnitJapanese,
+                            setEditUnitPhonetic,
+                            setEditUnitPhoneticReview,
+                          )
+                        }
+                        disabled={generatingUnitField !== null}
+                        className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {generatingUnitField === "both"
+                          ? "生成中..."
+                          : "和訳＋発音をAI生成"}
+                      </button>
+                    </div>
                   </div>
                   <PhoneticEditor
                     source={editUnitEnglish}
                     value={editUnitPhonetic}
                     issues={editUnitPhoneticReview}
+                    onSourceChange={handleEditUnitEnglishChange}
                     onChange={setEditUnitPhonetic}
                     onIssuesChange={setEditUnitPhoneticReview}
                   />
                 </div>
               </div>
 
-              <div className="flex gap-3">
+              <div className="order-1">
+                <MediaFields
+                  audioName={editAudioName} audioUrl={editAudioUrl}
+                  alignmentName={editAlignmentName} alignment={editAlignment}
+                  error={editMediaError} uploadAudio={editUploadAudio}
+                  onUploadAudio={editAudioFile ? (value) => {
+                    setEditUploadAudio(value); setEditMediaDirty(true);
+                  } : undefined}
+                  onAudio={handleEditAudioFile}
+                  onAlignment={(file) => void handleEditAlignmentFile(file)}
+                  duration={editMediaDuration} onDuration={setEditMediaDuration}
+                  onRemoveAudio={() => {
+                    if (!window.confirm("音声を削除しますか？保存時にクラウド上の音声も削除されます。")) return;
+                    setEditAudioName(""); setEditAudioUrl(""); setEditAudioFile(null);
+                    setEditMediaDuration(undefined); setEditUploadAudio(false);
+                    setRemoveEditAudio(true); setEditMediaDirty(true);
+                  }}
+                  onRemoveAlignment={() => {
+                    if (!window.confirm("JSONと音声同期情報を削除しますか？保存時に反映されます。")) return;
+                    setEditAlignmentName(""); setEditAlignment(null); setEditAlignmentFile(null);
+                    setRemoveEditAlignment(true); setEditMediaDirty(true);
+                    setEditMediaError("");
+                  }}
+                />
+              </div>
+
+              <div className="fixed bottom-3 left-1/2 z-50 flex w-[calc(100%-1.5rem)] max-w-xl -translate-x-1/2 items-center gap-2 rounded-2xl border border-gray-200 bg-white/95 p-2 shadow-xl backdrop-blur">
                 <button
                   onClick={saveEditUnit}
-                  className="flex-1 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700"
+                  className="flex-1 rounded-xl bg-blue-600 px-4 py-2.5 text-white hover:bg-blue-700"
                 >
                   保存
                 </button>
                 <button
                   onClick={cancelUnitEdit}
-                  className="px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50"
+                  className="rounded-xl border border-gray-300 px-4 py-2.5 text-gray-700 hover:bg-gray-50"
                 >
                   キャンセル
                 </button>
-              </div>
-              <div className="flex justify-end mt-6">
                 <button
                   onClick={async () => {
                     if (!editingUnit) return;
@@ -1931,15 +3433,20 @@ export default function EnglishReadingApp() {
                     );
                     if (!ok) return;
 
-                    await supabase
+                    const { error } = await supabase
                       .from("units")
                       .delete()
                       .eq("id", editingUnit.id);
+                    if (error) {
+                      alert(`ユニットの削除に失敗しました: ${error.message}`);
+                      return;
+                    }
+                    void removeUnitMediaFiles([editingUnit]);
                     setUnits(units.filter((u) => u.id !== editingUnit.id));
                     setEditingUnit(null);
                     setCurrentView("list");
                   }}
-                  className="bg-red-600 text-white px-6 py-3 rounded-lg hover:bg-red-700"
+                  className="rounded-xl px-4 py-2.5 text-red-600 hover:bg-red-50"
                 >
                   削除
                 </button>
@@ -1951,14 +3458,17 @@ export default function EnglishReadingApp() {
         {/* === リーダー画面 === */}
         {currentView === "reader" && (
           <div
-            className={`max-w-4xl pb-20 ${
+            className={`flex min-h-0 w-full max-w-4xl flex-1 flex-col ${
               hasReaderSidePanel
-                ? "mx-auto lg:ml-auto lg:mr-[46vw] lg:max-w-4xl lg:pr-4 xl:mr-[42vw]"
+                ? "mx-auto lg:ml-auto lg:mr-[46vw] lg:w-[calc(100%-46vw)] lg:max-w-4xl lg:pr-4 xl:mr-[42vw] xl:w-[calc(100%-42vw)]"
                 : "mx-auto"
             }`}
           >
-            <div className="bg-white p-4 rounded-lg shadow-md space-y-3">
+            <div data-reader-scroll className="min-h-0 flex-1 space-y-1 overflow-y-auto rounded-t-lg bg-white py-4 pl-10 pr-4 shadow-md">
               {selectedUnit?.lines.map((line) => {
+                const timedLine = localUnitMedia[
+                  selectedUnit.id
+                ]?.alignment?.lines.find((item) => item.lineId === line.id);
                 const englishWords = line.english.trim().split(/\s+/);
                 const phoneticWords = line.phonetic.includes("|")
                   ? line.phonetic.split(/\s*\|\s*/)
@@ -1982,30 +3492,71 @@ export default function EnglishReadingApp() {
                   <div
                     key={line.id}
                     data-reader-line-id={line.id}
-                    className="border-b border-gray-200 pb-3 last:border-0"
+                    className={`relative border-b border-gray-100 pb-2 transition-colors last:border-0 ${
+                      (timingEditing ? timingEditLineId === line.id : activeTimedLineId === line.id)
+                        ? "rounded bg-blue-50/70"
+                        : ""
+                    }`}
                     onClick={() => {
                       if (window.getSelection()?.toString().trim()) return;
-                      if (!selectedUnit) return;
-
-                      const shouldShowBoth = !(
-                        line.showJapanese && line.showPhonetic
-                      );
-                      setSelectedUnit({
-                        ...selectedUnit,
-                        lines: selectedUnit.lines.map((item) =>
-                          item.id === line.id
-                            ? {
-                                ...item,
-                                showJapanese: shouldShowBoth,
-                                showPhonetic: shouldShowBoth,
-                              }
-                            : item,
-                        ),
-                      });
+                      seekToTimedLine(line.id);
                     }}
                   >
+                    <div className="absolute -left-8 top-0 z-10 flex flex-col gap-0.5 rounded bg-white/80 p-0.5 shadow-sm backdrop-blur-sm">
+                      <button
+                        type="button"
+                        aria-label={`${line.id + 1}行目の発音記号を${line.showPhonetic ? "隠す" : "表示"}`}
+                        title="この行の発音記号を切り替え"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedUnit({
+                            ...selectedUnit,
+                            lines: selectedUnit.lines.map((item) =>
+                              item.id === line.id
+                                ? { ...item, showPhonetic: !item.showPhonetic }
+                                : item,
+                            ),
+                          });
+                        }}
+                        className={`h-5 w-6 rounded text-[10px] font-medium transition ${
+                          line.showPhonetic
+                            ? "bg-violet-100 text-violet-700"
+                            : "text-gray-400 opacity-60 hover:bg-gray-100 hover:opacity-100"
+                        }`}
+                      >
+                        発
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`${line.id + 1}行目の和訳を${line.showJapanese ? "隠す" : "表示"}`}
+                        title="この行の和訳を切り替え"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedUnit({
+                            ...selectedUnit,
+                            lines: selectedUnit.lines.map((item) =>
+                              item.id === line.id
+                                ? { ...item, showJapanese: !item.showJapanese }
+                                : item,
+                            ),
+                          });
+                        }}
+                        className={`h-5 w-6 rounded text-[10px] font-medium transition ${
+                          line.showJapanese
+                            ? "bg-blue-100 text-blue-700"
+                            : "text-gray-400 opacity-60 hover:bg-gray-100 hover:opacity-100"
+                        }`}
+                      >
+                        日
+                      </button>
+                    </div>
                     <div
-                      className="min-w-0 max-w-full select-text cursor-text"
+                      className={`min-w-0 max-w-full select-text ${
+                        timedLine?.startMs !== null &&
+                        localUnitMedia[selectedUnit.id]?.audioUrl
+                          ? "cursor-pointer"
+                          : "cursor-text"
+                      }`}
                       onMouseUp={() => handleTextSelection(line.id)}
                     >
                       {line.showPhonetic &&
@@ -2020,8 +3571,11 @@ export default function EnglishReadingApp() {
                         <div className="max-w-full break-words pt-1 text-lg leading-tight [overflow-wrap:anywhere]">
                           {(() => {
                             let phoneticIndex = 0;
+                            let characterOffset = 0;
                             return pronunciationSegments.map(
                               (segment, index) => {
+                                const startChar = characterOffset;
+                                characterOffset += segment.text.length;
                                 if (segment.isWhitespace) {
                                   return (
                                     <span key={`${line.id}-space-${index}`}>
@@ -2032,10 +3586,31 @@ export default function EnglishReadingApp() {
 
                                 const phonetic =
                                   phoneticWords[phoneticIndex++] ?? "";
+                                const timedWord = timedLine?.words.find(
+                                  (word) =>
+                                    word.startChar < characterOffset &&
+                                    word.endChar > startChar,
+                                );
+                                const isActiveWord =
+                                  activeTimedLineId === line.id &&
+                                  activeTimedWordIndex === timedWord?.wordIndex;
                                 return phonetic ? (
                                   <ruby
                                     key={`${line.id}-segment-${index}`}
-                                    className="whitespace-nowrap leading-tight [ruby-overhang:none]"
+                                    onClick={(event) => {
+                                      if (window.getSelection()?.toString().trim()) return;
+                                      if (!timedWord) return;
+                                      event.stopPropagation();
+                                      handleTimedTargetClick(
+                                        `word:${line.id}:${timedWord.wordIndex}`,
+                                        timedWord.startMs / 1000,
+                                      );
+                                    }}
+                                    className={`whitespace-nowrap rounded-sm leading-tight [ruby-overhang:none] ${
+                                      isActiveWord
+                                        ? "bg-blue-200 text-blue-950"
+                                        : ""
+                                    }`}
                                   >
                                     {segment.text}
                                     <rt className="text-sm font-normal leading-none text-gray-500">
@@ -2045,7 +3620,17 @@ export default function EnglishReadingApp() {
                                 ) : (
                                   <span
                                     key={`${line.id}-segment-${index}`}
-                                    className="whitespace-nowrap"
+                                    onClick={(event) => {
+                                      if (window.getSelection()?.toString().trim()) return;
+                                      if (!timedWord) return;
+                                      event.stopPropagation();
+                                      handleTimedTargetClick(`word:${line.id}:${timedWord.wordIndex}`, timedWord.startMs / 1000);
+                                    }}
+                                    className={`whitespace-nowrap rounded-sm ${
+                                      isActiveWord
+                                        ? "bg-blue-200 text-blue-950"
+                                        : ""
+                                    }`}
                                   >
                                     {segment.text}
                                   </span>
@@ -2056,28 +3641,80 @@ export default function EnglishReadingApp() {
                         </div>
                       ) : canAlignPhonetic ? (
                         <div className="flex flex-wrap items-end gap-x-2 gap-y-0.5 pt-1 text-lg leading-tight">
-                          {englishWords.map((word, index) => (
+                          {englishWords.map((word, index) => {
+                            const timedWord = timedLine?.words[index];
+                            return (
                             <ruby
                               key={`${line.id}-${index}`}
-                              className="max-w-full whitespace-nowrap leading-tight [ruby-overhang:none]"
+                              onClick={(event) => {
+                                if (window.getSelection()?.toString().trim()) return;
+                                if (!timedWord) return;
+                                event.stopPropagation();
+                                handleTimedTargetClick(
+                                  `word:${line.id}:${timedWord.wordIndex}`,
+                                  timedWord.startMs / 1000,
+                                );
+                              }}
+                              className={`max-w-full whitespace-nowrap rounded-sm leading-tight [ruby-overhang:none] ${
+                                activeTimedLineId === line.id &&
+                                activeTimedWordIndex === timedWord?.wordIndex
+                                  ? "bg-blue-200 text-blue-950"
+                                  : ""
+                              }`}
                             >
                               {word}
                               <rt className="text-sm font-normal leading-none text-gray-500">
                                 {phoneticWords[index]}
                               </rt>
                             </ruby>
-                          ))}
+                            );
+                          })}
                         </div>
                       ) : (
                         <div className="break-words text-lg leading-snug [overflow-wrap:anywhere]">
-                          {line.english}
+                          {(() => {
+                            let characterOffset = 0;
+                            return pronunciationSegments.map((segment, index) => {
+                              const startChar = characterOffset;
+                              characterOffset += segment.text.length;
+                              const timedWord = timedLine?.words.find(
+                                (word) =>
+                                  word.startChar < characterOffset &&
+                                  word.endChar > startChar,
+                              );
+                              const isActiveWord =
+                                activeTimedLineId === line.id &&
+                                activeTimedWordIndex === timedWord?.wordIndex;
+                              return (
+                                <span
+                                  key={`${line.id}-plain-${index}`}
+                                  onClick={(event) => {
+                                    if (window.getSelection()?.toString().trim()) return;
+                                    if (!timedWord) return;
+                                    event.stopPropagation();
+                                    handleTimedTargetClick(
+                                      `word:${line.id}:${timedWord.wordIndex}`,
+                                      timedWord.startMs / 1000,
+                                    );
+                                  }}
+                                  className={
+                                    isActiveWord
+                                      ? "rounded-sm bg-blue-200 text-blue-950"
+                                      : ""
+                                  }
+                                >
+                                  {segment.text}
+                                </span>
+                              );
+                            });
+                          })()}
                         </div>
                       )}
                     </div>
 
                     {line.showJapanese && line.japanese && (
                       <div
-                        className="mt-1 p-2 bg-blue-50 rounded text-gray-700 text-sm"
+                        className="mt-0.5 border-l-2 border-gray-200 pl-2 text-sm leading-snug text-gray-600"
                         onMouseUp={() => handleTextSelection(line.id)}
                       >
                         {line.japanese}
@@ -2087,6 +3724,222 @@ export default function EnglishReadingApp() {
                 );
               })}
             </div>
+
+            {selectedUnit && localUnitMedia[selectedUnit.id]?.audioUrl && (
+              <>
+                <audio
+                  ref={audioRef}
+                  src={localUnitMedia[selectedUnit.id].audioUrl}
+                  onLoadedMetadata={(event) => {
+                    event.currentTarget.playbackRate = playbackRate;
+                    setAudioDuration(event.currentTarget.duration);
+                    setAudioCurrentTime(event.currentTarget.currentTime);
+                  }}
+                  onPlay={() => setIsAudioPlaying(true)}
+                  onPause={() => setIsAudioPlaying(false)}
+                  onEnded={() => setIsAudioPlaying(false)}
+                />
+                <div className="z-30 max-h-[55dvh] shrink-0 overflow-y-auto rounded-b-lg border-t border-gray-200 bg-white shadow-md">
+                  <div className="px-3 py-1">
+                    <div className="flex items-center justify-center gap-3">
+                      {!playerExpanded && <button type="button" aria-label={isAudioPlaying ? "停止" : "再生"}
+                        onClick={() => { const audio = audioRef.current; if (!audio) return; armedTimedTargetRef.current = null; if (audio.paused) void audio.play(); else audio.pause(); }}
+                        className="rounded p-1 text-blue-600 hover:bg-blue-50">{isAudioPlaying ? <Pause size={18} /> : <Play size={18} />}</button>}
+                      <button type="button" aria-label={playerExpanded ? "プレイヤーをたたむ" : "プレイヤーを開く"}
+                        title={playerExpanded ? "プレイヤーをたたむ" : "プレイヤーを開く"} aria-expanded={playerExpanded}
+                        onClick={() => setPlayerExpanded((value) => !value)} className="flex w-20 items-center justify-center rounded py-1 text-gray-500 hover:bg-gray-100">
+                        {playerExpanded ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
+                      </button>
+                    </div>
+                    <div className={playerExpanded ? "" : "hidden"}>
+                    {timingEditing && localUnitMedia[selectedUnit.id].alignment && <TimingEditor
+                      key={selectedUnit.id}
+                      alignment={localUnitMedia[selectedUnit.id].alignment!}
+                      lineId={timingEditLineId}
+                      onLine={setTimingEditLineId}
+                      currentTime={() => audioRef.current?.currentTime ?? audioCurrentTime}
+                      onChange={changeReaderTiming}
+                      onSeek={(seconds) => seekAudio(seconds)}
+                      onSave={saveReaderTiming}
+                      onCancel={() => { if (timingOriginalRef.current) changeReaderTiming(timingOriginalRef.current); timingOwnerRef.current = null; setTimingEditing(false); }}
+                      onReset={() => {
+                        const original = selectedUnit.alignment_data ?? timingOriginalRef.current;
+                        if (original) changeReaderTiming(original);
+                      }}
+                    />}
+                    {!timingEditing && localUnitMedia[selectedUnit.id].alignment && <button
+                      type="button"
+                      className="mb-1 rounded px-2 py-0.5 text-xs text-gray-500 hover:bg-gray-100"
+                      onClick={() => {
+                        timingOriginalRef.current = localUnitMedia[selectedUnit.id].alignment;
+                        timingOwnerRef.current = selectedUnit.id;
+                        setTimingEditLineId(activeTimedLineId ?? localUnitMedia[selectedUnit.id].alignment?.lines[0]?.lineId ?? null);
+                        setLoopTimedLineId(null);
+                        armedTimedTargetRef.current = null;
+                        setTimingEditing(true);
+                      }}
+                    >タイミング編集</button>}
+                    <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                      <span className="w-10 text-right tabular-nums">
+                        {formatPlaybackTime(audioCurrentTime)}
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={Math.max(audioDuration, 0.01)}
+                        step={0.01}
+                        value={Math.min(audioCurrentTime, audioDuration || 0)}
+                        onChange={(event) => {
+                          armedTimedTargetRef.current = null;
+                          seekAudio(Number(event.target.value), false);
+                        }}
+                        className="h-1.5 min-w-0 flex-1 cursor-pointer accent-blue-600"
+                        aria-label="再生位置"
+                      />
+                      <span className="w-10 tabular-nums">
+                        {formatPlaybackTime(audioDuration)}
+                      </span>
+                      <select
+                        value={playbackRate}
+                        onChange={(event) => {
+                          const nextRate = Number(event.target.value);
+                          setPlaybackRate(nextRate);
+                          if (audioRef.current) {
+                            audioRef.current.playbackRate = nextRate;
+                          }
+                        }}
+                        aria-label="再生速度"
+                        title="再生速度"
+                        className="rounded border border-gray-200 bg-white px-1 py-0.5 text-xs text-gray-600"
+                      >
+                        {[0.5, 0.75, 0.85, 1, 1.25, 1.5, 2].map((rate) => (
+                          <option key={rate} value={rate}>
+                            {rate}×
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setFollowPlayback((current) => !current)}
+                        title={followPlayback ? "再生位置への追従を停止" : "再生位置に追従"}
+                        aria-pressed={followPlayback}
+                        className={`rounded px-2 py-0.5 text-xs transition ${
+                          followPlayback
+                            ? "bg-blue-100 text-blue-700"
+                            : "border border-gray-200 bg-white text-gray-500 hover:bg-gray-50"
+                        }`}
+                      >
+                        追従
+                      </button>
+                    </div>
+                    <div className="mt-1 flex items-center justify-center gap-1 sm:gap-2">
+                      <button
+                        type="button"
+                        title="前の行"
+                        aria-label="前の行"
+                        disabled={!localUnitMedia[selectedUnit.id].alignment}
+                        onClick={() => moveByTimedItem("line", -1)}
+                        className="rounded-full p-2 text-gray-600 hover:bg-gray-100 disabled:opacity-30"
+                      >
+                        <CornerUpRight size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        title="前の単語"
+                        aria-label="前の単語"
+                        disabled={!localUnitMedia[selectedUnit.id].alignment}
+                        onClick={() => moveByTimedItem("word", -1)}
+                        className="rounded-full p-2 text-gray-600 hover:bg-gray-100 disabled:opacity-30"
+                      >
+                        <ArrowLeft size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        title="5秒戻る"
+                        aria-label="5秒戻る"
+                        onClick={() => {
+                          armedTimedTargetRef.current = null;
+                          seekAudio(audioCurrentTime - 5);
+                        }}
+                        className="rounded-full px-2 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-100"
+                      >
+                        −5
+                      </button>
+                      <button
+                        type="button"
+                        title={isAudioPlaying ? "一時停止" : "再生"}
+                        aria-label={isAudioPlaying ? "一時停止" : "再生"}
+                        onClick={() => {
+                          const audio = audioRef.current;
+                          if (!audio) return;
+                          armedTimedTargetRef.current = null;
+                          if (audio.paused) void audio.play();
+                          else audio.pause();
+                        }}
+                        className="rounded-full bg-blue-600 p-3 text-white shadow hover:bg-blue-700"
+                      >
+                        {isAudioPlaying ? <Pause size={22} /> : <Play size={22} />}
+                      </button>
+                      <button
+                        type="button"
+                        title="5秒進む"
+                        aria-label="5秒進む"
+                        onClick={() => {
+                          armedTimedTargetRef.current = null;
+                          seekAudio(audioCurrentTime + 5);
+                        }}
+                        className="rounded-full px-2 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-100"
+                      >
+                        +5
+                      </button>
+                      <button
+                        type="button"
+                        title="次の単語"
+                        aria-label="次の単語"
+                        disabled={!localUnitMedia[selectedUnit.id].alignment}
+                        onClick={() => moveByTimedItem("word", 1)}
+                        className="rounded-full p-2 text-gray-600 hover:bg-gray-100 disabled:opacity-30"
+                      >
+                        <ArrowRight size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        title="次の行"
+                        aria-label="次の行"
+                        disabled={!localUnitMedia[selectedUnit.id].alignment}
+                        onClick={() => moveByTimedItem("line", 1)}
+                        className="rounded-full p-2 text-gray-600 hover:bg-gray-100 disabled:opacity-30"
+                      >
+                        <CornerDownLeft size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        title={
+                          loopTimedLineId === null
+                            ? "現在の行を繰り返す"
+                            : "行ループを解除"
+                        }
+                        aria-label={
+                          loopTimedLineId === null
+                            ? "現在の行を繰り返す"
+                            : "行ループを解除"
+                        }
+                        disabled={!localUnitMedia[selectedUnit.id].alignment}
+                        onClick={toggleCurrentLineLoop}
+                        className={`rounded-full p-2 transition disabled:opacity-30 ${
+                          loopTimedLineId !== null
+                            ? "bg-blue-100 text-blue-700"
+                            : "text-gray-600 hover:bg-gray-100"
+                        }`}
+                      >
+                        <Repeat1 size={18} />
+                      </button>
+                    </div>
+                  </div>
+                  </div>
+                </div>
+              </>
+            )}
 
             <div
               className={
@@ -2639,30 +4492,6 @@ export default function EnglishReadingApp() {
                 <button
                   onClick={() => {
                     if (!selectedUnit) return;
-                    const nextShowAllJapanese = !showAllJapanese;
-
-                    const updatedUnit = {
-                      ...selectedUnit,
-                      lines: selectedUnit.lines.map((l) => ({
-                        ...l,
-                        showJapanese: nextShowAllJapanese,
-                      })),
-                    };
-
-                    setSelectedUnit(updatedUnit);
-                    setShowAllJapanese(nextShowAllJapanese);
-                  }}
-                  className={`flex items-center gap-1 bg-blue-600 text-white px-3 py-2 rounded-lg shadow-md hover:bg-blue-700 text-sm ${
-                    showAllJapanese ? "opacity-100" : "opacity-50"
-                  }`}
-                >
-                  <Eye size={16} />
-                  訳
-                </button>
-
-                <button
-                  onClick={() => {
-                    if (!selectedUnit) return;
                     const nextShowAllPhonetic = !showAllPhonetic;
 
                     const updatedUnit = {
@@ -2682,6 +4511,30 @@ export default function EnglishReadingApp() {
                 >
                   <EyeOff size={16} />
                   発音
+                </button>
+
+                <button
+                  onClick={() => {
+                    if (!selectedUnit) return;
+                    const nextShowAllJapanese = !showAllJapanese;
+
+                    const updatedUnit = {
+                      ...selectedUnit,
+                      lines: selectedUnit.lines.map((l) => ({
+                        ...l,
+                        showJapanese: nextShowAllJapanese,
+                      })),
+                    };
+
+                    setSelectedUnit(updatedUnit);
+                    setShowAllJapanese(nextShowAllJapanese);
+                  }}
+                  className={`flex items-center gap-1 bg-blue-600 text-white px-3 py-2 rounded-lg shadow-md hover:bg-blue-700 text-sm ${
+                    showAllJapanese ? "opacity-100" : "opacity-50"
+                  }`}
+                >
+                  <Eye size={16} />
+                  訳
                 </button>
               </div>
 
