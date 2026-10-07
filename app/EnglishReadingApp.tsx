@@ -9,6 +9,7 @@ import React, {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import TimingEditor from "./TimingEditor";
+import FloatingPlayer from "./FloatingPlayer";
 import VocabularyScope, { type ScopeItem } from "./VocabularyScope";
 import {
   ArrowLeft,
@@ -33,7 +34,6 @@ import {
   Save,
   ChevronDown,
   ChevronLeft,
-  ChevronUp,
   ChevronRight,
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
@@ -679,26 +679,9 @@ export default function EnglishReadingApp() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [timingEditing, setTimingEditing] = useState(false);
   const [playerExpanded, setPlayerExpanded] = useState(false);
-  const playerPanelRef = useRef<HTMLDivElement>(null);
-  const [playerBottomOffset, setPlayerBottomOffset] = useState(0);
   const [timingEditLineId, setTimingEditLineId] = useState<number | null>(null);
   const timingOriginalRef = useRef<UnitAlignment | null>(null);
   const timingOwnerRef = useRef<string | null>(null);
-  const readerAudioUrl = localUnitMedia[selectedUnit?.id ?? ""]?.audioUrl;
-
-  useEffect(() => {
-    const panel = playerPanelRef.current;
-    if (!panel || currentView !== "reader") {
-      setPlayerBottomOffset(0);
-      return;
-    }
-    const measure = () => setPlayerBottomOffset(Math.max(0, window.innerHeight - panel.getBoundingClientRect().top));
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(panel);
-    window.addEventListener("resize", measure);
-    return () => { observer.disconnect(); window.removeEventListener("resize", measure); };
-  }, [currentView, selectedUnit?.id, readerAudioUrl, playerExpanded, timingEditing]);
   const playbackFrameRef = useRef<number | null>(null);
   const armedTimedTargetRef = useRef<string | null>(null);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
@@ -1869,6 +1852,34 @@ export default function EnglishReadingApp() {
     if (lineId !== undefined) setSelectedLineId(lineId);
     setIsSelectionPanelOpen(true);
   };
+
+  const lastNativeSelectionRef = useRef("");
+  useEffect(() => {
+    if (currentView !== "reader") return;
+    let timer: ReturnType<typeof setTimeout>;
+    const readSelection = () => {
+      const selection = window.getSelection();
+      const text = selection?.toString().trim();
+      if (!text || !selection?.rangeCount) { lastNativeSelectionRef.current = ""; return; }
+      const elementOf = (node: Node | null) => node instanceof Element ? node : node?.parentElement;
+      const start = elementOf(selection.anchorNode)?.closest<HTMLElement>("[data-selection-line], [data-selection-ai-line]");
+      const end = elementOf(selection.focusNode)?.closest<HTMLElement>("[data-selection-line], [data-selection-ai-line]");
+      if (!start || !end) return;
+      const aiLine = start.dataset.selectionAiLine;
+      const lineId = Number(aiLine ?? start.dataset.selectionLine);
+      if (!Number.isFinite(lineId)) return;
+      const key = `${aiLine === undefined ? "script" : "ai"}:${lineId}:${text}`;
+      if (lastNativeSelectionRef.current === key) return;
+      lastNativeSelectionRef.current = key;
+      if (aiLine !== undefined) handleAiResponseSelection(lineId);
+      else handleTextSelection(lineId);
+    };
+    const schedule = () => { clearTimeout(timer); timer = setTimeout(readSelection, 250); };
+    document.addEventListener("selectionchange", schedule);
+    document.addEventListener("touchend", schedule, { passive: true });
+    document.addEventListener("pointerup", schedule);
+    return () => { clearTimeout(timer); document.removeEventListener("selectionchange", schedule); document.removeEventListener("touchend", schedule); document.removeEventListener("pointerup", schedule); };
+  });
 
   const compareLibraryItems = (
     first: { name: string; created_at?: string },
@@ -3608,6 +3619,7 @@ export default function EnglishReadingApp() {
                           ? "cursor-pointer"
                           : "cursor-text"
                       }`}
+                      data-selection-line={line.id}
                       onMouseUp={() => handleTextSelection(line.id)}
                     >
                       {line.showPhonetic &&
@@ -3766,6 +3778,7 @@ export default function EnglishReadingApp() {
                     {line.showJapanese && line.japanese && (
                       <div
                         className="mt-0.5 border-l-2 border-gray-200 pl-2 text-sm leading-snug text-gray-600"
+                        data-selection-line={line.id}
                         onMouseUp={() => handleTextSelection(line.id)}
                       >
                         {line.japanese}
@@ -3790,18 +3803,9 @@ export default function EnglishReadingApp() {
                   onPause={() => setIsAudioPlaying(false)}
                   onEnded={() => setIsAudioPlaying(false)}
                 />
-                <div ref={playerPanelRef} className="z-30 max-h-[55dvh] shrink-0 overflow-y-auto rounded-b-lg border-t border-gray-200 bg-white shadow-md">
+                <FloatingPlayer expanded={playerExpanded} onExpanded={setPlayerExpanded} playing={isAudioPlaying}
+                  onPlayback={() => { const audio = audioRef.current; if (!audio) return; armedTimedTargetRef.current = null; if (audio.paused) void audio.play(); else audio.pause(); }}>
                   <div className="px-3 py-1">
-                    <div className="flex items-center justify-center gap-3">
-                      {!playerExpanded && <button type="button" aria-label={isAudioPlaying ? "停止" : "再生"}
-                        onClick={() => { const audio = audioRef.current; if (!audio) return; armedTimedTargetRef.current = null; if (audio.paused) void audio.play(); else audio.pause(); }}
-                        className="rounded p-1 text-blue-600 hover:bg-blue-50">{isAudioPlaying ? <Pause size={18} /> : <Play size={18} />}</button>}
-                      <button type="button" aria-label={playerExpanded ? "プレイヤーをたたむ" : "プレイヤーを開く"}
-                        title={playerExpanded ? "プレイヤーをたたむ" : "プレイヤーを開く"} aria-expanded={playerExpanded}
-                        onClick={() => setPlayerExpanded((value) => !value)} className="flex w-20 items-center justify-center rounded py-1 text-gray-500 hover:bg-gray-100">
-                        {playerExpanded ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
-                      </button>
-                    </div>
                     <div className={playerExpanded ? "" : "hidden"}>
                     {timingEditing && localUnitMedia[selectedUnit.id].alignment && <TimingEditor
                       key={selectedUnit.id}
@@ -3988,7 +3992,7 @@ export default function EnglishReadingApp() {
                     </div>
                   </div>
                   </div>
-                </div>
+                </FloatingPlayer>
               </>
             )}
 
@@ -4338,6 +4342,7 @@ export default function EnglishReadingApp() {
                                 ? "ml-8 whitespace-pre-wrap bg-gray-100 text-gray-700"
                                 : "bg-purple-50 text-gray-800 select-text"
                             }`}
+                            data-selection-ai-line={message.role === "model" ? activeAiChat?.lineId : undefined}
                             onMouseUp={
                               message.role === "model"
                                 ? () =>
@@ -4520,7 +4525,7 @@ export default function EnglishReadingApp() {
                 </aside>
               )}
               <div
-                style={{ bottom: playerBottomOffset + 12 }}
+                style={{ bottom: 12 }}
                 className={`fixed z-50 flex flex-col gap-2 transition-[right,bottom] duration-200 ${
                   hasReaderSidePanel
                     ? "right-3 lg:right-[calc(46vw+0.75rem)] xl:right-[calc(42vw+0.75rem)]"
