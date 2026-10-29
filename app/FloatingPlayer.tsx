@@ -2,8 +2,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type PointerEvent } from "react";
 import { ChevronDown, GripHorizontal, Rewind, FastForward, Pause, Play } from "lucide-react";
 
-export default function FloatingPlayer({ playing, onPlayback, onPrevious, onNext, onDockHeight, header, children }: {
-  playing: boolean; onPlayback: () => void; onPrevious: () => void; onNext: () => void; onDockHeight?: (height: number) => void; header?: ReactNode; children: ReactNode;
+export default function FloatingPlayer({ playing, onPlayback, onPrevious, onNext, onDockHeight, header, headerRight, children }: {
+  playing: boolean; onPlayback: () => void; onPrevious: () => void; onNext: () => void; onDockHeight?: (height: number) => void; header?: ReactNode; headerRight?: ReactNode; children: ReactNode;
 }) {
   const [size, setSize] = useState(0);
   const expanded = size === 2;
@@ -68,13 +68,13 @@ export default function FloatingPlayer({ playing, onPlayback, onPrevious, onNext
   }, []);
   const isDocked = docked && expanded;
   useEffect(() => { onDockHeight?.(isDocked ? height : 0); return () => onDockHeight?.(0); }, [isDocked, height, onDockHeight]);
-  return <>{isDocked && <div aria-hidden className="shrink-0" style={{ height: height + 8 }} />}<div ref={panel} style={isDocked ? { left: 0, bottom: 0, width: "100%" } : position ? { left: position.left, top: position.top } : { left: 12, bottom: 12 }}
+  return <>{isDocked && <div aria-hidden className="shrink-0" style={{ height }} />}<div ref={panel} style={isDocked ? { left: 0, bottom: 0, width: "100%" } : position ? { left: position.left, top: position.top } : { left: 12, bottom: 12 }}
     onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onLostPointerCapture={endDrag}
     onKeyDownCapture={() => { suppressClick.current = false; }}
     onClickCapture={(e) => { if (suppressClick.current) { e.preventDefault(); e.stopPropagation(); suppressClick.current = false; } }}
     className={`group/player fixed z-[55] border border-gray-200 bg-white/95 shadow-lg backdrop-blur ${expanded ? isDocked ? "rounded-t-xl" : "w-[min(720px,calc(100vw-16px))] rounded-xl" : size === 1 ? "w-44 rounded-full p-2" : "h-16 w-16 rounded-full"}`}>
     <div className="pointer-events-none absolute -inset-1 rounded-[inherit] border-[6px] border-gray-400/0 transition-colors group-hover/player:border-gray-400/20 group-focus-within/player:border-gray-400/20" />
-    {expanded && <div className="relative flex h-8 items-center px-3 pr-10"><div className="relative z-10">{header}</div><div aria-label="プレイヤーをドラッグして移動" title="ここをつまんで移動（下端で固定、上へドラッグで解除）" className="absolute inset-0 flex touch-none select-none cursor-grab items-center justify-center text-gray-400 active:cursor-grabbing"><GripHorizontal size={22} /></div></div>}
+    {expanded && <div className="relative flex h-8 items-center gap-2 px-3 pr-9"><div className="shrink-0">{header}</div><div aria-label="プレイヤーをドラッグして移動" title="ここをつまんで移動（下端で固定、上へドラッグで解除）" className="flex min-w-6 flex-1 self-stretch touch-none select-none cursor-grab items-center justify-center text-gray-400 active:cursor-grabbing"><GripHorizontal size={22} /></div><div className="flex shrink-0 items-center gap-2">{headerRight}</div></div>}
     <div className={expanded ? "" : "hidden"}>
       <button aria-label="プレイヤーを中サイズに縮小" title="縮小" onClick={() => setSize(1)} className="absolute right-1 top-0 rounded p-1 text-gray-500 hover:bg-gray-100"><ChevronDown size={18} /></button>
       <div className="max-h-[min(65dvh,calc(100dvh-48px))] overflow-y-auto">{children}</div>

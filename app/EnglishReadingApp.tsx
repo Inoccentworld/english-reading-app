@@ -2668,23 +2668,19 @@ export default function EnglishReadingApp() {
 
   // === ここからUI部分 ===
   return (
-    <div onDragEnd={() => { clearDragNavigation(); setDraggedLibraryItem(null); setLibraryDropTarget(null); }} className={`${currentView === "reader" ? "flex h-dvh flex-col overflow-hidden" : "min-h-screen"} bg-gradient-to-br from-blue-50 to-indigo-100 ${currentView === "list" ? "p-0" : currentView === "vocabulary" ? "px-3 py-2 sm:px-6" : "p-6"}`}>
+    <div onDragEnd={() => { clearDragNavigation(); setDraggedLibraryItem(null); setLibraryDropTarget(null); }} className={`${currentView === "reader" ? "flex h-dvh flex-col overflow-hidden bg-white p-0" : `min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 ${currentView === "list" ? "p-0" : currentView === "vocabulary" ? "px-3 py-2 sm:px-6" : "p-6"}`}`}>
       <div
         className={
           currentView === "reader" && hasReaderSidePanel
             ? "mx-auto flex min-h-0 w-full max-w-none flex-1 flex-col"
-            : currentView === "reader" ? "mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col" : currentView === "list" ? "w-full" : "mx-auto max-w-7xl"
+            : currentView === "reader" ? "flex min-h-0 w-full flex-1 flex-col" : currentView === "list" ? "w-full" : "mx-auto max-w-7xl"
         }
       >
-        <div className={`flex shrink-0 justify-end items-center ${currentView === "reader" ? "mb-3" : currentView === "list" || currentView === "vocabulary" ? "mb-1" : "mb-8"}`}>
+        {currentView !== "reader" && <div className={`flex shrink-0 justify-end items-center ${currentView === "list" || currentView === "vocabulary" ? "mb-1" : "mb-8"}`}>
 
           <nav aria-label="画面切り替え" className={`flex flex-wrap justify-end gap-2 ${currentView === "list" ? "px-2 pt-2" : ""}`}>
             <button
               onClick={() => {
-                if (currentView === "reader") {
-                  window.history.back();
-                  return;
-                }
                 if (currentView === "edit" && !cancelUnitEdit()) return;
                 if (currentView === "vocabulary" && !cancelVocabularyEdit()) {
                   return;
@@ -2716,7 +2712,7 @@ export default function EnglishReadingApp() {
               単語帳
             </button>
           </nav>
-        </div>
+        </div>}
 
         {/* === ユニット一覧 === */}
         {currentView === "list" && (
@@ -3518,13 +3514,17 @@ export default function EnglishReadingApp() {
         {/* === リーダー画面 === */}
         {currentView === "reader" && (
           <div
-            className={`flex min-h-0 w-full max-w-4xl flex-1 flex-col ${
+            className={`flex min-h-0 w-full flex-1 flex-col ${
               hasReaderSidePanel
                 ? "mx-auto lg:ml-auto lg:mr-[46vw] lg:w-[calc(100%-46vw)] lg:max-w-4xl lg:pr-4 xl:mr-[42vw] xl:w-[calc(100%-42vw)]"
                 : "mx-auto"
             }`}
           >
-            <div data-reader-scroll className="min-h-0 flex-1 space-y-1 overflow-y-auto rounded-t-lg bg-white py-4 pl-10 pr-4 shadow-md">
+            <div data-reader-scroll className="min-h-0 flex-1 space-y-1 overflow-y-auto bg-white pb-1 pt-2 pl-10 pr-4">
+              <header className="mb-4 flex flex-wrap items-center gap-2 text-sm text-gray-500">
+                <button onClick={() => window.history.back()} className="flex items-center gap-1 rounded px-1 py-1 hover:bg-gray-100" aria-label="ユニット一覧に戻る"><ChevronLeft size={18} />戻る</button>
+                <span className="min-w-0 break-words">{getFolderPath(selectedUnit?.folder_id)} <span className="mx-1 text-gray-300">›</span> <span className="text-gray-700">{selectedUnit?.title}</span></span>
+              </header>
               {selectedUnit?.lines.map((line) => {
                 const timedLine = localUnitMedia[
                   selectedUnit.id
@@ -3807,6 +3807,12 @@ export default function EnglishReadingApp() {
                   }}
                 />
                 <FloatingPlayer playing={isAudioPlaying} onDockHeight={setDockedPlayerHeight} onPrevious={() => moveByTimedItem("line", -1)} onNext={() => moveByTimedItem("line", 1)}
+                  headerRight={<>
+                    <select value={playbackRate} onChange={event => { const rate = Number(event.target.value); setPlaybackRate(rate); if (audioRef.current) audioRef.current.playbackRate = rate; }} aria-label="再生速度" title="再生速度" className="rounded border border-gray-200 bg-white px-1 py-0.5 text-xs text-gray-600">
+                      {[0.5, 0.75, 0.85, 1, 1.25, 1.5, 2].map(rate => <option key={rate} value={rate}>{rate}×</option>)}
+                    </select>
+                    <button type="button" onClick={() => setFollowPlayback(value => !value)} title={followPlayback ? "再生位置への追従を停止" : "再生位置に追従"} aria-pressed={followPlayback} className={`rounded px-2 py-0.5 text-xs ${followPlayback ? "bg-blue-100 text-blue-700" : "border border-gray-200 text-gray-500"}`}>追従</button>
+                  </>}
                   header={!timingEditing && localUnitMedia[selectedUnit.id].alignment && <button type="button" className="rounded px-2 py-0.5 text-xs text-gray-500 hover:bg-gray-100" onClick={() => {
                     timingOriginalRef.current = localUnitMedia[selectedUnit.id].alignment;
                     timingOwnerRef.current = selectedUnit.id;
@@ -3834,48 +3840,11 @@ export default function EnglishReadingApp() {
                         if (original) changeReaderTiming(original);
                       }}
                     />}
-                    <div className="flex items-center gap-2 text-[11px] text-gray-500">
-                      <span className="w-10 text-right tabular-nums">
-                        {formatPlaybackTime(audioCurrentTime)}
-                      </span>
+                    <div>
                       <AudioTimeline duration={audioDuration} current={audioCurrentTime} start={repeatStart} end={repeatEnd ?? audioDuration} onStart={setRepeatStart} onEnd={setRepeatEnd}
                         chapters={(localUnitMedia[selectedUnit.id].alignment?.lines ?? []).flatMap(l => l.startMs === null ? [] : [l.startMs / 1000])}
                         onSeek={seconds => { armedTimedTargetRef.current = null; seekAudio(seconds, false); }} />
-                      <span className="w-10 tabular-nums">
-                        {formatPlaybackTime(audioDuration)}
-                      </span>
-                      <select
-                        value={playbackRate}
-                        onChange={(event) => {
-                          const nextRate = Number(event.target.value);
-                          setPlaybackRate(nextRate);
-                          if (audioRef.current) {
-                            audioRef.current.playbackRate = nextRate;
-                          }
-                        }}
-                        aria-label="再生速度"
-                        title="再生速度"
-                        className="rounded border border-gray-200 bg-white px-1 py-0.5 text-xs text-gray-600"
-                      >
-                        {[0.5, 0.75, 0.85, 1, 1.25, 1.5, 2].map((rate) => (
-                          <option key={rate} value={rate}>
-                            {rate}×
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => setFollowPlayback((current) => !current)}
-                        title={followPlayback ? "再生位置への追従を停止" : "再生位置に追従"}
-                        aria-pressed={followPlayback}
-                        className={`rounded px-2 py-0.5 text-xs transition ${
-                          followPlayback
-                            ? "bg-blue-100 text-blue-700"
-                            : "border border-gray-200 bg-white text-gray-500 hover:bg-gray-50"
-                        }`}
-                      >
-                        追従
-                      </button>
+                      <div className="-mt-1 flex justify-between px-1 text-[11px] tabular-nums text-gray-500"><span>{formatPlaybackTime(audioCurrentTime)}</span><span>{formatPlaybackTime(audioDuration)}</span></div>
                     </div>
                     <div className="mt-1 flex items-center justify-center gap-1 sm:gap-2">
                       <button
