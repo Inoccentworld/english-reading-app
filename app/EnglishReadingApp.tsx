@@ -10,6 +10,7 @@ import React, {
 import ReactMarkdown from "react-markdown";
 import TimingEditor from "./TimingEditor";
 import FloatingPlayer from "./FloatingPlayer";
+import AudioTimeline from "./AudioTimeline";
 import VocabularyScope, { type ScopeItem } from "./VocabularyScope";
 import {
   ArrowLeft,
@@ -18,8 +19,9 @@ import {
   BookMarked,
   PanelLeftOpen,
   PanelLeftClose,
-  CornerDownLeft,
-  CornerUpRight,
+  FastForward,
+  Rewind,
+  Repeat,
   Pause,
   Play,
   Repeat1,
@@ -678,7 +680,10 @@ export default function EnglishReadingApp() {
   const [editMediaDirty, setEditMediaDirty] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [timingEditing, setTimingEditing] = useState(false);
-  const [playerExpanded, setPlayerExpanded] = useState(false);
+  const [repeatMode, setRepeatMode] = useState<"off" | "all" | "line">("off");
+  const [repeatStart, setRepeatStart] = useState(0);
+  const [repeatEnd, setRepeatEnd] = useState<number | null>(null);
+  const [dockedPlayerHeight, setDockedPlayerHeight] = useState(0);
   const [timingEditLineId, setTimingEditLineId] = useState<number | null>(null);
   const timingOriginalRef = useRef<UnitAlignment | null>(null);
   const timingOwnerRef = useRef<string | null>(null);
@@ -692,7 +697,6 @@ export default function EnglishReadingApp() {
   const [activeTimedLineId, setActiveTimedLineId] = useState<number | null>(null);
   const [activeTimedWordIndex, setActiveTimedWordIndex] = useState<number | null>(null);
   const [followPlayback, setFollowPlayback] = useState(true);
-  const automaticScrollUntilRef = useRef(0);
   const [generatingUnitField, setGeneratingUnitField] = useState<
     "translation" | "phonetic" | "both" | null
   >(null);
@@ -859,24 +863,6 @@ export default function EnglishReadingApp() {
   }, [libraryContextMenu]);
 
   useEffect(() => {
-    if (currentView !== "reader") return;
-    const stopFollowingOnManualScroll = () => {
-      if (Date.now() < automaticScrollUntilRef.current) return;
-      setFollowPlayback(false);
-    };
-    window.addEventListener("wheel", stopFollowingOnManualScroll, {
-      passive: true,
-    });
-    window.addEventListener("touchstart", stopFollowingOnManualScroll, {
-      passive: true,
-    });
-    return () => {
-      window.removeEventListener("wheel", stopFollowingOnManualScroll);
-      window.removeEventListener("touchstart", stopFollowingOnManualScroll);
-    };
-  }, [currentView]);
-
-  useEffect(() => {
     if (
       currentView !== "reader" ||
       !followPlayback ||
@@ -894,7 +880,6 @@ export default function EnglishReadingApp() {
     const upperLimit = viewport ? viewport.top + viewport.height * 0.25 : window.innerHeight * 0.25;
     const lowerLimit = viewport ? viewport.top + viewport.height * 0.7 : window.innerHeight * 0.7;
     if (bounds.top >= upperLimit && bounds.bottom <= lowerLimit) return;
-    automaticScrollUntilRef.current = Date.now() + 700;
     element.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [activeTimedLineId, currentView, followPlayback]);
 
@@ -1272,6 +1257,9 @@ export default function EnglishReadingApp() {
     const tick = () => {
       const audio = audioRef.current;
       if (!audio) return;
+      if (repeatMode === "all" && audio.currentTime >= (repeatEnd ?? audio.duration)) {
+        audio.currentTime = repeatStart;
+      }
       if (loopTimedLineId !== null && selectedUnit) {
         const loopLine = localUnitMedia[
           selectedUnit.id
@@ -1302,6 +1290,9 @@ export default function EnglishReadingApp() {
     loopTimedLineId,
     selectedUnit,
     updateActiveTiming,
+    repeatMode,
+    repeatStart,
+    repeatEnd,
   ]);
 
   useEffect(() => {
@@ -1319,6 +1310,10 @@ export default function EnglishReadingApp() {
     armedTimedTargetRef.current = null;
     setTimingEditing(false);
     setTimingEditLineId(null);
+    setRepeatMode("off");
+    setRepeatStart(0);
+    setRepeatEnd(null);
+    setLoopTimedLineId(null);
   }, [selectedUnit?.id]);
 
   useEffect(() => {
@@ -1433,15 +1428,18 @@ export default function EnglishReadingApp() {
 
   const toggleCurrentLineLoop = () => {
     if (!selectedUnit) return;
-    if (loopTimedLineId !== null) {
+    if (repeatMode === "line") {
+      setRepeatMode("off");
       setLoopTimedLineId(null);
       return;
     }
+    if (repeatMode === "off") { setRepeatMode("all"); setLoopTimedLineId(null); return; }
     const alignment = localUnitMedia[selectedUnit.id]?.alignment;
-    if (!alignment) return;
+    if (!alignment) { setRepeatMode("off"); return; }
     const fallbackLine = alignment.lines.find((line) => line.startMs !== null);
     const lineId = activeTimedLineId ?? fallbackLine?.lineId;
-    if (lineId !== undefined) setLoopTimedLineId(lineId);
+    if (lineId !== undefined) { setLoopTimedLineId(lineId); setRepeatMode("line"); }
+    else setRepeatMode("off");
   };
 
   useEffect(() => {
@@ -3801,12 +3799,26 @@ export default function EnglishReadingApp() {
                   }}
                   onPlay={() => setIsAudioPlaying(true)}
                   onPause={() => setIsAudioPlaying(false)}
-                  onEnded={() => setIsAudioPlaying(false)}
+                  onEnded={(event) => {
+                    if (repeatMode === "off") { setIsAudioPlaying(false); return; }
+                    const line = localUnitMedia[selectedUnit.id]?.alignment?.lines.find(l => l.lineId === loopTimedLineId);
+                    event.currentTarget.currentTime = repeatMode === "line" ? (line?.startMs ?? 0) / 1000 : Math.min(repeatStart, Math.max(0, audioDuration - 0.05));
+                    void event.currentTarget.play();
+                  }}
                 />
-                <FloatingPlayer expanded={playerExpanded} onExpanded={setPlayerExpanded} playing={isAudioPlaying}
+                <FloatingPlayer playing={isAudioPlaying} onDockHeight={setDockedPlayerHeight} onPrevious={() => moveByTimedItem("line", -1)} onNext={() => moveByTimedItem("line", 1)}
+                  header={!timingEditing && localUnitMedia[selectedUnit.id].alignment && <button type="button" className="rounded px-2 py-0.5 text-xs text-gray-500 hover:bg-gray-100" onClick={() => {
+                    timingOriginalRef.current = localUnitMedia[selectedUnit.id].alignment;
+                    timingOwnerRef.current = selectedUnit.id;
+                    setTimingEditLineId(activeTimedLineId ?? localUnitMedia[selectedUnit.id].alignment?.lines[0]?.lineId ?? null);
+                    setLoopTimedLineId(null);
+                    setRepeatMode("off");
+                    armedTimedTargetRef.current = null;
+                    setTimingEditing(true);
+                  }}>タイミング編集</button>}
                   onPlayback={() => { const audio = audioRef.current; if (!audio) return; armedTimedTargetRef.current = null; if (audio.paused) void audio.play(); else audio.pause(); }}>
                   <div className="px-3 py-1">
-                    <div className={playerExpanded ? "" : "hidden"}>
+                    <div>
                     {timingEditing && localUnitMedia[selectedUnit.id].alignment && <TimingEditor
                       key={selectedUnit.id}
                       alignment={localUnitMedia[selectedUnit.id].alignment!}
@@ -3822,35 +3834,13 @@ export default function EnglishReadingApp() {
                         if (original) changeReaderTiming(original);
                       }}
                     />}
-                    {!timingEditing && localUnitMedia[selectedUnit.id].alignment && <button
-                      type="button"
-                      className="mb-1 rounded px-2 py-0.5 text-xs text-gray-500 hover:bg-gray-100"
-                      onClick={() => {
-                        timingOriginalRef.current = localUnitMedia[selectedUnit.id].alignment;
-                        timingOwnerRef.current = selectedUnit.id;
-                        setTimingEditLineId(activeTimedLineId ?? localUnitMedia[selectedUnit.id].alignment?.lines[0]?.lineId ?? null);
-                        setLoopTimedLineId(null);
-                        armedTimedTargetRef.current = null;
-                        setTimingEditing(true);
-                      }}
-                    >タイミング編集</button>}
                     <div className="flex items-center gap-2 text-[11px] text-gray-500">
                       <span className="w-10 text-right tabular-nums">
                         {formatPlaybackTime(audioCurrentTime)}
                       </span>
-                      <input
-                        type="range"
-                        min={0}
-                        max={Math.max(audioDuration, 0.01)}
-                        step={0.01}
-                        value={Math.min(audioCurrentTime, audioDuration || 0)}
-                        onChange={(event) => {
-                          armedTimedTargetRef.current = null;
-                          seekAudio(Number(event.target.value), false);
-                        }}
-                        className="h-1.5 min-w-0 flex-1 cursor-pointer accent-blue-600"
-                        aria-label="再生位置"
-                      />
+                      <AudioTimeline duration={audioDuration} current={audioCurrentTime} start={repeatStart} end={repeatEnd ?? audioDuration} onStart={setRepeatStart} onEnd={setRepeatEnd}
+                        chapters={(localUnitMedia[selectedUnit.id].alignment?.lines ?? []).flatMap(l => l.startMs === null ? [] : [l.startMs / 1000])}
+                        onSeek={seconds => { armedTimedTargetRef.current = null; seekAudio(seconds, false); }} />
                       <span className="w-10 tabular-nums">
                         {formatPlaybackTime(audioDuration)}
                       </span>
@@ -3896,7 +3886,7 @@ export default function EnglishReadingApp() {
                         onClick={() => moveByTimedItem("line", -1)}
                         className="rounded-full p-2 text-gray-600 hover:bg-gray-100 disabled:opacity-30"
                       >
-                        <CornerUpRight size={18} />
+                        <Rewind size={18} />
                       </button>
                       <button
                         type="button"
@@ -3931,7 +3921,7 @@ export default function EnglishReadingApp() {
                           if (audio.paused) void audio.play();
                           else audio.pause();
                         }}
-                        className="rounded-full bg-blue-600 p-3 text-white shadow hover:bg-blue-700"
+                        className="rounded-full p-3 text-gray-700 hover:bg-gray-100"
                       >
                         {isAudioPlaying ? <Pause size={22} /> : <Play size={22} />}
                       </button>
@@ -3965,29 +3955,24 @@ export default function EnglishReadingApp() {
                         onClick={() => moveByTimedItem("line", 1)}
                         className="rounded-full p-2 text-gray-600 hover:bg-gray-100 disabled:opacity-30"
                       >
-                        <CornerDownLeft size={18} />
+                        <FastForward size={18} />
                       </button>
                       <button
                         type="button"
                         title={
-                          loopTimedLineId === null
-                            ? "現在の行を繰り返す"
-                            : "行ループを解除"
+                          `リピート：${repeatMode === "off" ? "なし" : repeatMode === "all" ? "全体" : "行"}`
                         }
                         aria-label={
-                          loopTimedLineId === null
-                            ? "現在の行を繰り返す"
-                            : "行ループを解除"
+                          `リピート：${repeatMode === "off" ? "なし" : repeatMode === "all" ? "全体" : "行"}`
                         }
-                        disabled={!localUnitMedia[selectedUnit.id].alignment}
                         onClick={toggleCurrentLineLoop}
                         className={`rounded-full p-2 transition disabled:opacity-30 ${
-                          loopTimedLineId !== null
+                          repeatMode !== "off"
                             ? "bg-blue-100 text-blue-700"
                             : "text-gray-600 hover:bg-gray-100"
                         }`}
                       >
-                        <Repeat1 size={18} />
+                        {repeatMode === "line" ? <Repeat1 size={18} /> : <Repeat size={18} />}
                       </button>
                     </div>
                   </div>
@@ -4525,7 +4510,7 @@ export default function EnglishReadingApp() {
                 </aside>
               )}
               <div
-                style={{ bottom: 12 }}
+                style={{ bottom: dockedPlayerHeight + 12 }}
                 className={`fixed z-50 flex flex-col gap-2 transition-[right,bottom] duration-200 ${
                   hasReaderSidePanel
                     ? "right-3 lg:right-[calc(46vw+0.75rem)] xl:right-[calc(42vw+0.75rem)]"
@@ -4544,7 +4529,7 @@ export default function EnglishReadingApp() {
                   }`}
                 >
                   <BookOpen size={16} />
-                  単語帳
+                  <span className="sr-only">単語帳</span>
                 </button>
                 <button
                   onClick={() => {
@@ -4567,7 +4552,7 @@ export default function EnglishReadingApp() {
                   }`}
                 >
                   <EyeOff size={16} />
-                  発音
+                  <span className="sr-only">発音</span>
                 </button>
 
                 <button
@@ -4591,7 +4576,7 @@ export default function EnglishReadingApp() {
                   }`}
                 >
                   <Eye size={16} />
-                  訳
+                  <span className="sr-only">訳</span>
                 </button>
               </div>
 
