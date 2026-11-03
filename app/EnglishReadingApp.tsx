@@ -3953,9 +3953,9 @@ export default function EnglishReadingApp() {
             <div
               className={
                 isSelectionPanelOpen
-                  ? `fixed bottom-0 left-0 right-0 z-40 border-t-2 border-gray-300 bg-white p-4 pr-24 shadow-lg ${
+                  ? `relative z-40 max-h-[50dvh] shrink-0 overflow-y-auto border-t-2 border-gray-300 bg-white p-4 pr-24 shadow-lg ${
                       hasStartedAi
-                        ? "lg:bottom-auto lg:left-auto lg:right-0 lg:top-0 lg:h-screen lg:w-[46vw] lg:overflow-hidden lg:border-l-2 lg:border-t-0 lg:p-3 xl:w-[42vw]"
+                        ? "lg:fixed lg:bottom-auto lg:left-auto lg:right-0 lg:top-0 lg:h-screen lg:max-h-none lg:w-[46vw] lg:overflow-hidden lg:border-l-2 lg:border-t-0 lg:p-3 xl:w-[42vw]"
                         : ""
                     }`
                   : "contents"
@@ -4555,6 +4555,7 @@ export default function EnglishReadingApp() {
                 </div>
               )}
             </div>
+            <div aria-hidden className="shrink-0" style={{ height: dockedPlayerHeight }} />
           </div>
         )}
 
