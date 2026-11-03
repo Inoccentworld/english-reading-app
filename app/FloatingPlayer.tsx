@@ -5,9 +5,9 @@ import { ChevronDown, GripHorizontal, Rewind, FastForward, Pause, Play } from "l
 export default function FloatingPlayer({ playing, onPlayback, onPrevious, onNext, onDockHeight, header, headerRight, children }: {
   playing: boolean; onPlayback: () => void; onPrevious: () => void; onNext: () => void; onDockHeight?: (height: number) => void; header?: ReactNode; headerRight?: ReactNode; children: ReactNode;
 }) {
-  const [size, setSize] = useState(0);
+  const [size, setSize] = useState(2);
   const expanded = size === 2;
-  const [docked, setDocked] = useState(false);
+  const [docked, setDocked] = useState(true);
   const [height, setHeight] = useState(0);
   const panel = useRef<HTMLDivElement>(null);
   const drag = useRef<{ id: number; x: number; y: number; left: number; top: number; moved: boolean; edge: boolean } | null>(null);

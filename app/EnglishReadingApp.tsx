@@ -10,7 +10,7 @@ import React, {
 import ReactMarkdown from "react-markdown";
 import TimingEditor from "./TimingEditor";
 import FloatingPlayer from "./FloatingPlayer";
-import AudioTimeline from "./AudioTimeline";
+import AudioTimeline, { type AudioTimelineHandle } from "./AudioTimeline";
 import VocabularyScope, { type ScopeItem } from "./VocabularyScope";
 import {
   ArrowLeft,
@@ -28,8 +28,6 @@ import {
   Plus,
   List,
   X,
-  Eye,
-  EyeOff,
   Folder,
   FolderPlus,
   MoreVertical,
@@ -679,6 +677,7 @@ export default function EnglishReadingApp() {
   const [removeEditAlignment, setRemoveEditAlignment] = useState(false);
   const [editMediaDirty, setEditMediaDirty] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const audioTimelineRef = useRef<AudioTimelineHandle>(null);
   const [timingEditing, setTimingEditing] = useState(false);
   const [repeatMode, setRepeatMode] = useState<"off" | "all" | "line">("off");
   const [repeatStart, setRepeatStart] = useState(0);
@@ -697,6 +696,7 @@ export default function EnglishReadingApp() {
   const [activeTimedLineId, setActiveTimedLineId] = useState<number | null>(null);
   const [activeTimedWordIndex, setActiveTimedWordIndex] = useState<number | null>(null);
   const [followPlayback, setFollowPlayback] = useState(true);
+  const scrubbingPreviewRef = useRef(false);
   const [generatingUnitField, setGeneratingUnitField] = useState<
     "translation" | "phonetic" | "both" | null
   >(null);
@@ -1252,15 +1252,20 @@ export default function EnglishReadingApp() {
     setActiveTimedWordIndex(activeWordIndex);
   }, [localUnitMedia, selectedUnit]);
 
+  const previewScrubTiming = useCallback((seconds: number | null) => {
+    scrubbingPreviewRef.current = seconds !== null;
+    updateActiveTiming(seconds ?? audioRef.current?.currentTime ?? 0);
+  }, [updateActiveTiming]);
+
   useEffect(() => {
     if (!isAudioPlaying) return;
     const tick = () => {
       const audio = audioRef.current;
       if (!audio) return;
-      if (repeatMode === "all" && audio.currentTime >= (repeatEnd ?? audio.duration)) {
+      if (!scrubbingPreviewRef.current && repeatMode === "all" && audio.currentTime >= (repeatEnd ?? audio.duration)) {
         audio.currentTime = repeatStart;
       }
-      if (loopTimedLineId !== null && selectedUnit) {
+      if (!scrubbingPreviewRef.current && loopTimedLineId !== null && selectedUnit) {
         const loopLine = localUnitMedia[
           selectedUnit.id
         ]?.alignment?.lines.find((line) => line.lineId === loopTimedLineId);
@@ -1274,7 +1279,7 @@ export default function EnglishReadingApp() {
         }
       }
       setAudioCurrentTime(audio.currentTime);
-      updateActiveTiming(audio.currentTime);
+      if (!scrubbingPreviewRef.current) updateActiveTiming(audio.currentTime);
       playbackFrameRef.current = window.requestAnimationFrame(tick);
     };
     playbackFrameRef.current = window.requestAnimationFrame(tick);
@@ -1383,6 +1388,14 @@ export default function EnglishReadingApp() {
     if (timingEditing) {
       const lineId = Number(targetKey.split(":")[1]);
       if (Number.isFinite(lineId)) setTimingEditLineId(lineId);
+      return;
+    }
+    const [kind, lineKey, wordKey] = targetKey.split(":");
+    const line = selectedUnit ? localUnitMedia[selectedUnit.id]?.alignment?.lines.find(item => item.lineId === Number(lineKey)) : undefined;
+    const word = kind === "word" ? line?.words.find(item => item.wordIndex === Number(wordKey)) : undefined;
+    const endMs = word?.endMs ?? line?.endMs;
+    if (audioTimelineRef.current?.selectScriptTime(timeSeconds, endMs !== null && endMs !== undefined ? endMs / 1000 : timeSeconds)) {
+      armedTimedTargetRef.current = null;
       return;
     }
     const audio = audioRef.current;
@@ -3806,7 +3819,7 @@ export default function EnglishReadingApp() {
                     void event.currentTarget.play();
                   }}
                 />
-                <FloatingPlayer playing={isAudioPlaying} onDockHeight={setDockedPlayerHeight} onPrevious={() => moveByTimedItem("line", -1)} onNext={() => moveByTimedItem("line", 1)}
+                <FloatingPlayer key={selectedUnit.id} playing={isAudioPlaying} onDockHeight={setDockedPlayerHeight} onPrevious={() => moveByTimedItem("line", -1)} onNext={() => moveByTimedItem("line", 1)}
                   headerRight={<>
                     <select value={playbackRate} onChange={event => { const rate = Number(event.target.value); setPlaybackRate(rate); if (audioRef.current) audioRef.current.playbackRate = rate; }} aria-label="再生速度" title="再生速度" className="rounded border border-gray-200 bg-white px-1 py-0.5 text-xs text-gray-600">
                       {[0.5, 0.75, 0.85, 1, 1.25, 1.5, 2].map(rate => <option key={rate} value={rate}>{rate}×</option>)}
@@ -3841,7 +3854,8 @@ export default function EnglishReadingApp() {
                       }}
                     />}
                     <div>
-                      <AudioTimeline duration={audioDuration} current={audioCurrentTime} start={repeatStart} end={repeatEnd ?? audioDuration} onStart={setRepeatStart} onEnd={setRepeatEnd}
+                      <AudioTimeline ref={audioTimelineRef} duration={audioDuration} current={audioCurrentTime} start={repeatStart} end={repeatEnd ?? audioDuration} onStart={setRepeatStart} onEnd={setRepeatEnd} onPreview={previewScrubTiming}
+                        words={(localUnitMedia[selectedUnit.id].alignment?.lines ?? []).flatMap(line => line.words).sort((a, b) => a.startMs - b.startMs)}
                         chapters={(localUnitMedia[selectedUnit.id].alignment?.lines ?? []).flatMap(l => l.startMs === null ? [] : [l.startMs / 1000])}
                         onSeek={seconds => { armedTimedTargetRef.current = null; seekAudio(seconds, false); }} />
                       <div className="-mt-1 flex justify-between px-1 text-[11px] tabular-nums text-gray-500"><span>{formatPlaybackTime(audioCurrentTime)}</span><span>{formatPlaybackTime(audioDuration)}</span></div>
@@ -4520,7 +4534,7 @@ export default function EnglishReadingApp() {
                     showAllPhonetic ? "opacity-100" : "opacity-50"
                   }`}
                 >
-                  <EyeOff size={16} />
+                  <span aria-hidden="true" className="flex h-4 w-4 items-center justify-center text-sm font-semibold leading-none">発</span>
                   <span className="sr-only">発音</span>
                 </button>
 
@@ -4544,7 +4558,7 @@ export default function EnglishReadingApp() {
                     showAllJapanese ? "opacity-100" : "opacity-50"
                   }`}
                 >
-                  <Eye size={16} />
+                  <span aria-hidden="true" className="flex h-4 w-4 items-center justify-center text-sm font-semibold leading-none">日</span>
                   <span className="sr-only">訳</span>
                 </button>
               </div>
