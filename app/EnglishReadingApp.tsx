@@ -11,6 +11,7 @@ import ReactMarkdown from "react-markdown";
 import TimingEditor from "./TimingEditor";
 import FloatingPlayer from "./FloatingPlayer";
 import AudioTimeline, { type AudioTimelineHandle } from "./AudioTimeline";
+const PLAYBACK_RATES = [0.5, 0.75, 0.85, 1, 1.25, 1.5, 2];
 import VocabularyScope, { type ScopeItem } from "./VocabularyScope";
 import {
   ArrowLeft,
@@ -692,6 +693,17 @@ export default function EnglishReadingApp() {
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [shortcutNotice, setShortcutNotice] = useState<{ text: string; id: number } | null>(null);
+  const shortcutNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shortcutNoticeId = useRef(0);
+  const showShortcutNotice = useCallback((text: string) => {
+    if (shortcutNoticeTimer.current) clearTimeout(shortcutNoticeTimer.current);
+    const id = ++shortcutNoticeId.current;
+    setShortcutNotice({ text, id });
+    shortcutNoticeTimer.current = setTimeout(() => setShortcutNotice(null), 800);
+    return id;
+  }, []);
+  useEffect(() => () => { if (shortcutNoticeTimer.current) clearTimeout(shortcutNoticeTimer.current); }, []);
   const [loopTimedLineId, setLoopTimedLineId] = useState<number | null>(null);
   const [activeTimedLineId, setActiveTimedLineId] = useState<number | null>(null);
   const [activeTimedWordIndex, setActiveTimedWordIndex] = useState<number | null>(null);
@@ -1437,6 +1449,7 @@ export default function EnglishReadingApp() {
       targetIndex = Math.min(currentIndex + 1, starts.length - 1);
     }
     seekAudio(starts[targetIndex] / 1000);
+    return direction < 0 ? (targetIndex === currentIndex ? "行の先頭" : "前の行") : "次の行";
   };
 
   const toggleCurrentLineLoop = () => {
@@ -1444,46 +1457,65 @@ export default function EnglishReadingApp() {
     if (repeatMode === "line") {
       setRepeatMode("off");
       setLoopTimedLineId(null);
-      return;
+      return "off";
     }
-    if (repeatMode === "off") { setRepeatMode("all"); setLoopTimedLineId(null); return; }
+    if (repeatMode === "off") { setRepeatMode("all"); setLoopTimedLineId(null); return "all"; }
     const alignment = localUnitMedia[selectedUnit.id]?.alignment;
-    if (!alignment) { setRepeatMode("off"); return; }
+    if (!alignment) { setRepeatMode("off"); return "off"; }
     const fallbackLine = alignment.lines.find((line) => line.startMs !== null);
     const lineId = activeTimedLineId ?? fallbackLine?.lineId;
-    if (lineId !== undefined) { setLoopTimedLineId(lineId); setRepeatMode("line"); }
-    else setRepeatMode("off");
+    if (lineId !== undefined) { setLoopTimedLineId(lineId); setRepeatMode("line"); return "line"; }
+    setRepeatMode("off");
+    return "off";
   };
 
   useEffect(() => {
     const handlePlaybackShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
       if (currentView !== "reader" || !selectedUnit) return;
       if (!localUnitMedia[selectedUnit.id]?.audioUrl) return;
       const target = event.target as HTMLElement | null;
       if (
         target?.isContentEditable ||
-        target?.closest("input, textarea, select, button, [contenteditable='true']")
+        target?.closest("input, textarea, select, button, a, [role='slider'], [role='button'], [contenteditable='true']")
       ) {
         return;
       }
 
       if (event.code === "Space") {
         event.preventDefault();
+        if (event.repeat) return;
         armedTimedTargetRef.current = null;
         const audio = audioRef.current;
         if (!audio) return;
-        if (audio.paused) void audio.play();
-        else audio.pause();
+        if (audio.paused) {
+          const noticeId = showShortcutNotice("▶ 再生");
+          void audio.play().catch(() => { if (shortcutNoticeId.current === noticeId) showShortcutNotice("再生できませんでした"); });
+        } else { audio.pause(); showShortcutNotice("Ⅱ 一時停止"); }
         return;
       }
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         event.preventDefault();
-        moveByTimedItem("line", event.key === "ArrowLeft" ? -1 : 1);
+        const notice = moveByTimedItem("line", event.key === "ArrowLeft" ? -1 : 1);
+        if (notice) showShortcutNotice(notice);
+        return;
+      }
+      if (["d", "s"].includes(event.key.toLowerCase())) {
+        event.preventDefault();
+        const audio = audioRef.current;
+        if (!audio) return;
+        const up = event.key.toLowerCase() === "d";
+        const rate = (up ? PLAYBACK_RATES.find(value => value > audio.playbackRate + 0.001) : PLAYBACK_RATES.findLast(value => value < audio.playbackRate - 0.001)) ?? (up ? PLAYBACK_RATES.at(-1)! : PLAYBACK_RATES[0]);
+        audio.playbackRate = rate;
+        setPlaybackRate(rate);
+        showShortcutNotice(`${rate}×`);
         return;
       }
       if (event.key.toLowerCase() === "r") {
         event.preventDefault();
-        toggleCurrentLineLoop();
+        if (event.repeat) return;
+        const mode = toggleCurrentLineLoop();
+        if (mode) showShortcutNotice(mode === "off" ? "リピートなし" : mode === "all" ? "全体リピート" : "行リピート");
       }
     };
 
@@ -3533,6 +3565,7 @@ export default function EnglishReadingApp() {
                 : "mx-auto"
             }`}
           >
+            {shortcutNotice && <div key={shortcutNotice.id} role="status" aria-live="polite" aria-atomic="true" className="pointer-events-none fixed left-1/2 top-1/2 z-[90] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-gray-800/60 px-4 py-2 text-sm font-medium text-white backdrop-blur-sm">{shortcutNotice.text}</div>}
             <div data-reader-scroll className="min-h-0 flex-1 space-y-1 overflow-y-auto bg-white pb-1 pt-2 pl-10 pr-4">
               <header className="mb-4 flex flex-wrap items-center gap-2 text-sm text-gray-500">
                 <button onClick={() => window.history.back()} className="flex items-center gap-1 rounded px-1 py-1 hover:bg-gray-100" aria-label="ユニット一覧に戻る"><ChevronLeft size={18} />戻る</button>
@@ -3822,7 +3855,7 @@ export default function EnglishReadingApp() {
                 <FloatingPlayer key={selectedUnit.id} playing={isAudioPlaying} onDockHeight={setDockedPlayerHeight} onPrevious={() => moveByTimedItem("line", -1)} onNext={() => moveByTimedItem("line", 1)}
                   headerRight={<>
                     <select value={playbackRate} onChange={event => { const rate = Number(event.target.value); setPlaybackRate(rate); if (audioRef.current) audioRef.current.playbackRate = rate; }} aria-label="再生速度" title="再生速度" className="rounded border border-gray-200 bg-white px-1 py-0.5 text-xs text-gray-600">
-                      {[0.5, 0.75, 0.85, 1, 1.25, 1.5, 2].map(rate => <option key={rate} value={rate}>{rate}×</option>)}
+                      {PLAYBACK_RATES.map(rate => <option key={rate} value={rate}>{rate}×</option>)}
                     </select>
                     <button type="button" onClick={() => setFollowPlayback(value => !value)} title={followPlayback ? "再生位置への追従を停止" : "再生位置に追従"} aria-pressed={followPlayback} className={`rounded px-2 py-0.5 text-xs ${followPlayback ? "bg-blue-100 text-blue-700" : "border border-gray-200 text-gray-500"}`}>追従</button>
                   </>}
