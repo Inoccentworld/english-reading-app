@@ -26,6 +26,8 @@ import {
   Pause,
   Play,
   Repeat1,
+  Volume2,
+  VolumeX,
   Plus,
   List,
   X,
@@ -102,6 +104,10 @@ type LocalUnitMedia = {
   alignmentName: string;
   alignment: UnitAlignment | null;
 };
+
+const getUnitWordCount = (unit: UnitType) => unit.lines.reduce(
+  (total, line) => total + (line.english.match(/[\p{L}\p{N}]+(?:(?:['’]|-(?!-))[\p{L}\p{N}]+)*/gu)?.length ?? 0), 0,
+);
 
 const UNIT_MEDIA_BUCKET = "unit-media";
 
@@ -693,6 +699,9 @@ export default function EnglishReadingApp() {
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [audioVolume, setAudioVolume] = useState(1);
+  const [audioMuted, setAudioMuted] = useState(false);
+  const lastAudibleVolumeRef = useRef(1);
   const [shortcutNotice, setShortcutNotice] = useState<{ text: string; id: number } | null>(null);
   const shortcutNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shortcutNoticeId = useRef(0);
@@ -1383,6 +1392,29 @@ export default function EnglishReadingApp() {
     setAudioCurrentTime(nextTime);
     updateActiveTiming(nextTime);
     if (shouldPlay) void audio.play();
+  };
+
+  const changePlayerVolume = (volume: number) => {
+    const next = Math.max(0, Math.min(1, volume));
+    if (next > 0) lastAudibleVolumeRef.current = next;
+    setAudioVolume(next);
+    setAudioMuted(false);
+    if (audioRef.current) {
+      audioRef.current.volume = next;
+      audioRef.current.muted = false;
+      if (Math.abs(audioRef.current.volume - next) > 0.01) {
+        setAudioVolume(audioRef.current.volume);
+        showShortcutNotice("音量は端末側で調整してください");
+      }
+    }
+  };
+  const togglePlayerMute = () => {
+    if (audioMuted || audioVolume === 0) {
+      changePlayerVolume(audioVolume > 0 ? audioVolume : lastAudibleVolumeRef.current);
+    } else {
+      setAudioMuted(true);
+      if (audioRef.current) audioRef.current.muted = true;
+    }
   };
 
   const seekToTimedLine = (lineId: number) => {
@@ -2876,7 +2908,7 @@ export default function EnglishReadingApp() {
                     </span>
                   </div>
                 )}
-                <div className="grid grid-cols-[minmax(0,1fr)_90px] border-b border-gray-200 bg-gray-50 px-3 text-xs font-medium text-gray-500">
+                <div className="grid grid-cols-[minmax(0,1fr)_64px_110px] border-b border-gray-200 bg-gray-50 px-3 text-xs font-medium text-gray-500">
                   <button
                     type="button"
                     onClick={() => {
@@ -2893,6 +2925,7 @@ export default function EnglishReadingApp() {
                   >
                     名前 {librarySortKey === "name" ? (librarySortDirection === "asc" ? "↑" : "↓") : ""}
                   </button>
+                  <span className="py-2 pr-2 text-right">単語数</span>
                   <button
                     type="button"
                     onClick={() => {
@@ -2953,7 +2986,7 @@ export default function EnglishReadingApp() {
                             setSelectedLibraryItem(item);
                             setLibraryContextMenu({ ...item, x: event.clientX, y: event.clientY });
                           }}
-                          className={`grid h-10 cursor-default grid-cols-[minmax(0,1fr)_90px] items-center px-3 text-sm ${
+                          className={`grid h-10 cursor-default grid-cols-[minmax(0,1fr)_64px_110px] items-center px-3 text-sm ${
                             libraryDropTarget === `folder:${folder.id}` ? "bg-blue-100 ring-2 ring-inset ring-blue-400" : selected ? "bg-blue-100 text-blue-950" : "hover:bg-gray-50"
                           }`}
                         >
@@ -2975,6 +3008,7 @@ export default function EnglishReadingApp() {
                               <span className="truncate">{folder.name}</span>
                             )}
                           </div>
+                          <span aria-hidden="true" />
                           <span className="flex items-center justify-end text-xs text-gray-500">
                             {folder.created_at
                               ? new Date(folder.created_at).toLocaleDateString("ja-JP")
@@ -3015,7 +3049,7 @@ export default function EnglishReadingApp() {
                             setSelectedLibraryItem(item);
                             setLibraryContextMenu({ ...item, x: event.clientX, y: event.clientY });
                           }}
-                          className={`grid h-10 cursor-default grid-cols-[minmax(0,1fr)_90px] items-center px-3 text-sm ${
+                          className={`grid h-10 cursor-default grid-cols-[minmax(0,1fr)_64px_110px] items-center px-3 text-sm ${
                             selected ? "bg-blue-100 text-blue-950" : "hover:bg-gray-50"
                           }`}
                         >
@@ -3037,6 +3071,7 @@ export default function EnglishReadingApp() {
                               <span className="truncate">{unit.title}</span>
                             )}
                           </div>
+                          <span className="pr-2 text-right text-xs tabular-nums text-gray-500">{getUnitWordCount(unit).toLocaleString("ja-JP")}語</span>
                           <span className="flex items-center justify-end text-xs text-gray-500">
                             {unit.created_at
                               ? new Date(unit.created_at).toLocaleDateString("ja-JP")
@@ -3072,6 +3107,7 @@ export default function EnglishReadingApp() {
                         >
                           <BookOpen size={16} className="shrink-0 text-gray-400" />
                           <span className="min-w-0 flex-1 truncate">{unit.title}</span>
+                          <span className="shrink-0 text-xs tabular-nums text-gray-500">{getUnitWordCount(unit).toLocaleString("ja-JP")}語</span>
                           <span title={`保存場所: ${getFolderPath(unit.folder_id)}`} className="flex min-w-0 max-w-[45%] items-center gap-1 text-xs text-gray-500">
                             <Folder size={13} className="shrink-0" />
                             <span className="truncate">{getFolderPath(unit.folder_id)}</span>
@@ -3565,7 +3601,7 @@ export default function EnglishReadingApp() {
                 : "mx-auto"
             }`}
           >
-            {shortcutNotice && <div key={shortcutNotice.id} role="status" aria-live="polite" aria-atomic="true" className="pointer-events-none fixed left-1/2 top-1/2 z-[90] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-gray-800/60 px-4 py-2 text-sm font-medium text-white backdrop-blur-sm">{shortcutNotice.text}</div>}
+            {shortcutNotice && <div key={shortcutNotice.id} role="status" aria-live="polite" aria-atomic="true" style={{ bottom: dockedPlayerHeight > 0 ? dockedPlayerHeight + 12 : 88 }} className="pointer-events-none fixed left-1/2 z-[90] -translate-x-1/2 rounded-xl bg-gray-800/60 px-4 py-2 text-sm font-medium text-white backdrop-blur-sm">{shortcutNotice.text}</div>}
             <div data-reader-scroll className="min-h-0 flex-1 space-y-1 overflow-y-auto bg-white pb-1 pt-2 pl-10 pr-4">
               <header className="mb-4 flex flex-wrap items-center gap-2 text-sm text-gray-500">
                 <button onClick={() => window.history.back()} className="flex items-center gap-1 rounded px-1 py-1 hover:bg-gray-100" aria-label="ユニット一覧に戻る"><ChevronLeft size={18} />戻る</button>
@@ -3840,11 +3876,18 @@ export default function EnglishReadingApp() {
                   src={localUnitMedia[selectedUnit.id].audioUrl}
                   onLoadedMetadata={(event) => {
                     event.currentTarget.playbackRate = playbackRate;
+                    event.currentTarget.volume = audioVolume;
+                    event.currentTarget.muted = audioMuted;
                     setAudioDuration(event.currentTarget.duration);
                     setAudioCurrentTime(event.currentTarget.currentTime);
                   }}
                   onPlay={() => setIsAudioPlaying(true)}
                   onPause={() => setIsAudioPlaying(false)}
+                  onVolumeChange={event => {
+                    setAudioVolume(event.currentTarget.volume);
+                    setAudioMuted(event.currentTarget.muted);
+                    if (event.currentTarget.volume > 0) lastAudibleVolumeRef.current = event.currentTarget.volume;
+                  }}
                   onEnded={(event) => {
                     if (repeatMode === "off") { setIsAudioPlaying(false); return; }
                     const line = localUnitMedia[selectedUnit.id]?.alignment?.lines.find(l => l.lineId === loopTimedLineId);
@@ -3893,7 +3936,7 @@ export default function EnglishReadingApp() {
                         onSeek={seconds => { armedTimedTargetRef.current = null; seekAudio(seconds, false); }} />
                       <div className="-mt-1 flex justify-between px-1 text-[11px] tabular-nums text-gray-500"><span>{formatPlaybackTime(audioCurrentTime)}</span><span>{formatPlaybackTime(audioDuration)}</span></div>
                     </div>
-                    <div className="mt-1 flex items-center justify-center gap-1 sm:gap-2">
+                    <div className="mt-1 flex flex-wrap items-center justify-center gap-1 sm:gap-2">
                       <button
                         type="button"
                         title="前の行"
@@ -3990,6 +4033,12 @@ export default function EnglishReadingApp() {
                       >
                         {repeatMode === "line" ? <Repeat1 size={18} /> : <Repeat size={18} />}
                       </button>
+                      <div className="ml-1 flex items-center gap-1">
+                        <button type="button" onClick={togglePlayerMute} aria-label={audioMuted || audioVolume === 0 ? "ミュート解除" : "ミュート"} title={audioMuted || audioVolume === 0 ? "ミュート解除" : "ミュート"} aria-pressed={audioMuted || audioVolume === 0} className="rounded-full p-2 text-gray-600 hover:bg-gray-100">
+                          {audioMuted || audioVolume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                        </button>
+                        <input type="range" min={0} max={1} step={0.01} value={audioMuted ? 0 : audioVolume} onChange={event => changePlayerVolume(Number(event.target.value))} aria-label="音量" aria-valuetext={`${Math.round((audioMuted ? 0 : audioVolume) * 100)}%`} title={`音量 ${Math.round((audioMuted ? 0 : audioVolume) * 100)}%`} className="h-4 w-20 cursor-pointer accent-blue-600" />
+                      </div>
                     </div>
                   </div>
                   </div>
