@@ -3,11 +3,12 @@
 import React, {
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
-import ReactMarkdown from "react-markdown";
+import AiExplanationText from "./AiExplanationText";
 import TimingEditor from "./TimingEditor";
 import FloatingPlayer from "./FloatingPlayer";
 import AudioTimeline, { type AudioTimelineHandle } from "./AudioTimeline";
@@ -734,6 +735,9 @@ export default function EnglishReadingApp() {
   } | null>(null);
   const aiChatHeadersRef = useRef<HTMLDivElement>(null);
   const dictionaryCacheRef = useRef(new Map<string, DictionaryEntry>());
+  const selectionPointerIdsRef = useRef(new Set<number>());
+  const selectionTouchCountRef = useRef(0);
+  const isSelectingTextRef = useRef(false);
 
   const hasUnitUnsavedChanges = Boolean(
     editingUnit &&
@@ -888,6 +892,7 @@ export default function EnglishReadingApp() {
       currentView !== "reader" ||
       !followPlayback ||
       activeTimedLineId === null ||
+      isSelectingTextRef.current ||
       window.getSelection()?.toString().trim()
     ) {
       return;
@@ -1950,32 +1955,93 @@ export default function EnglishReadingApp() {
   };
 
   const lastNativeSelectionRef = useRef("");
+  const readNativeSelection = useEffectEvent(() => {
+    if (selectionPointerIdsRef.current.size || selectionTouchCountRef.current) return;
+    const selection = window.getSelection();
+    const text = selection?.toString().trim();
+    if (!text || !selection?.rangeCount) { lastNativeSelectionRef.current = ""; return; }
+    const elementOf = (node: Node | null) => node instanceof Element ? node : node?.parentElement;
+    const start = elementOf(selection.anchorNode)?.closest<HTMLElement>("[data-selection-line], [data-selection-ai-line]");
+    const end = elementOf(selection.focusNode)?.closest<HTMLElement>("[data-selection-line], [data-selection-ai-line]");
+    if (!start || !end) return;
+    const aiLine = start.dataset.selectionAiLine;
+    // Do not mix the script, AI messages, or unrelated panels in one selection.
+    if ((aiLine !== undefined) !== (end.dataset.selectionAiLine !== undefined)) return;
+    if (aiLine !== undefined && start !== end) return;
+    const lineId = Number(aiLine ?? start.dataset.selectionLine);
+    if (!Number.isFinite(lineId)) return;
+    const key = `${showVocabularyForm ? vocabularySelectionTargetRef.current : "selection"}:${aiLine === undefined ? "script" : "ai"}:${lineId}:${text}`;
+    if (lastNativeSelectionRef.current === key) return;
+    lastNativeSelectionRef.current = key;
+    if (aiLine !== undefined) handleAiResponseSelection(lineId);
+    else handleTextSelection(lineId);
+  });
   useEffect(() => {
     if (currentView !== "reader") return;
-    let timer: ReturnType<typeof setTimeout>;
-    const readSelection = () => {
-      const selection = window.getSelection();
-      const text = selection?.toString().trim();
-      if (!text || !selection?.rangeCount) { lastNativeSelectionRef.current = ""; return; }
-      const elementOf = (node: Node | null) => node instanceof Element ? node : node?.parentElement;
-      const start = elementOf(selection.anchorNode)?.closest<HTMLElement>("[data-selection-line], [data-selection-ai-line]");
-      const end = elementOf(selection.focusNode)?.closest<HTMLElement>("[data-selection-line], [data-selection-ai-line]");
-      if (!start || !end) return;
-      const aiLine = start.dataset.selectionAiLine;
-      const lineId = Number(aiLine ?? start.dataset.selectionLine);
-      if (!Number.isFinite(lineId)) return;
-      const key = `${showVocabularyForm ? vocabularySelectionTargetRef.current : "selection"}:${aiLine === undefined ? "script" : "ai"}:${lineId}:${text}`;
-      if (lastNativeSelectionRef.current === key) return;
-      lastNativeSelectionRef.current = key;
-      if (aiLine !== undefined) handleAiResponseSelection(lineId);
-      else handleTextSelection(lineId);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pressedPointers = selectionPointerIdsRef.current;
+    const schedule = () => {
+      clearTimeout(timer);
+      if (pressedPointers.size || selectionTouchCountRef.current) return;
+      timer = setTimeout(() => readNativeSelection(), 250);
     };
-    const schedule = () => { clearTimeout(timer); timer = setTimeout(readSelection, 250); };
+    const beginSelection = (target: EventTarget | null) => {
+      clearTimeout(timer);
+      if (!(target instanceof Element) || !target.closest("[data-selection-line], [data-selection-ai-line]")) return;
+      isSelectingTextRef.current = true;
+      // Cancel a follow-scroll already in flight before selection started.
+      const viewport = document.querySelector<HTMLElement>("[data-reader-scroll]");
+      viewport?.scrollTo({ top: viewport.scrollTop, left: viewport.scrollLeft, behavior: "instant" });
+      window.scrollTo({ top: window.scrollY, left: window.scrollX, behavior: "instant" });
+    };
+    const pointerDown = (event: PointerEvent) => {
+      pressedPointers.add(event.pointerId);
+      beginSelection(event.target);
+    };
+    const endSelection = () => {
+      if (!pressedPointers.size && !selectionTouchCountRef.current) {
+        isSelectingTextRef.current = false;
+        schedule();
+      }
+    };
+    const pointerUp = (event: PointerEvent) => {
+      pressedPointers.delete(event.pointerId);
+      endSelection();
+    };
+    const touchStart = (event: TouchEvent) => {
+      selectionTouchCountRef.current = event.touches.length;
+      beginSelection(event.target);
+    };
+    const touchEnd = (event: TouchEvent) => {
+      selectionTouchCountRef.current = event.touches.length;
+      endSelection();
+    };
+    const reset = () => {
+      clearTimeout(timer);
+      pressedPointers.clear();
+      selectionTouchCountRef.current = 0;
+      isSelectingTextRef.current = false;
+    };
+    document.addEventListener("pointerdown", pointerDown, true);
+    window.addEventListener("pointerup", pointerUp, true);
+    window.addEventListener("pointercancel", pointerUp, true);
+    document.addEventListener("touchstart", touchStart, { passive: true, capture: true });
+    window.addEventListener("touchend", touchEnd, { passive: true, capture: true });
+    window.addEventListener("touchcancel", touchEnd, { passive: true, capture: true });
     document.addEventListener("selectionchange", schedule);
-    document.addEventListener("touchend", schedule, { passive: true });
-    document.addEventListener("pointerup", schedule);
-    return () => { clearTimeout(timer); document.removeEventListener("selectionchange", schedule); document.removeEventListener("touchend", schedule); document.removeEventListener("pointerup", schedule); };
-  });
+    window.addEventListener("blur", reset);
+    return () => {
+      reset();
+      document.removeEventListener("pointerdown", pointerDown, true);
+      window.removeEventListener("pointerup", pointerUp, true);
+      window.removeEventListener("pointercancel", pointerUp, true);
+      document.removeEventListener("touchstart", touchStart, true);
+      window.removeEventListener("touchend", touchEnd, true);
+      window.removeEventListener("touchcancel", touchEnd, true);
+      document.removeEventListener("selectionchange", schedule);
+      window.removeEventListener("blur", reset);
+    };
+  }, [currentView]);
 
   const compareLibraryItems = (
     first: { name: string; created_at?: string },
@@ -3721,7 +3787,6 @@ export default function EnglishReadingApp() {
                           : "cursor-text"
                       }`}
                       data-selection-line={line.id}
-                      onMouseUp={() => handleTextSelection(line.id)}
                     >
                       {line.showPhonetic &&
                         line.phonetic &&
@@ -3880,7 +3945,6 @@ export default function EnglishReadingApp() {
                       <div
                         className="mt-0.5 border-l-2 border-gray-200 pl-2 text-sm leading-snug text-gray-600"
                         data-selection-line={line.id}
-                        onMouseUp={() => handleTextSelection(line.id)}
                       >
                         {line.japanese}
                       </div>
@@ -4093,7 +4157,7 @@ export default function EnglishReadingApp() {
                     }`}
                   >
                     <div className="flex flex-wrap items-center gap-2 pr-8">
-                      <h3 className="text-sm font-semibold text-gray-800">
+                      <h3 title={selectedText} className="min-w-0 max-w-full truncate text-sm font-semibold text-gray-800">
                         {selectedText
                           ? `「${selectedText}」を選択中`
                           : "単語・表現を選択してください"}
@@ -4268,7 +4332,19 @@ export default function EnglishReadingApp() {
                     )}
 
                     {(dictionaryEntry || dictionaryError) && (
-                      <div className="mt-2 rounded border border-emerald-200 bg-white p-3 text-sm text-gray-800">
+                      <div className="relative mt-2 rounded border border-emerald-200 bg-white p-3 pr-11 text-sm text-gray-800">
+                        <button
+                          type="button"
+                          aria-label="英英辞書を閉じる"
+                          title="英英辞書を閉じる"
+                          onClick={() => {
+                            setDictionaryEntry(null);
+                            setDictionaryError("");
+                          }}
+                          className="absolute right-2 top-2 rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+                        >
+                          <X size={16} />
+                        </button>
                         {dictionaryError ? (
                           <div className="flex items-center justify-between gap-3 text-red-700">
                             <span>{dictionaryError}</span>
@@ -4414,60 +4490,9 @@ export default function EnglishReadingApp() {
                                 : "bg-purple-50 text-gray-800 select-text"
                             }`}
                             data-selection-ai-line={message.role === "model" ? activeAiChat?.lineId : undefined}
-                            onMouseUp={
-                              message.role === "model"
-                                ? () =>
-                                    handleAiResponseSelection(
-                                      activeAiChat?.lineId,
-                                    )
-                                : undefined
-                            }
                           >
                             {message.role === "model" ? (
-                              <ReactMarkdown
-                                components={{
-                                  h1: ({ children }) => (
-                                    <h1 className="mb-2 mt-4 text-xl font-bold first:mt-0">
-                                      {children}
-                                    </h1>
-                                  ),
-                                  h2: ({ children }) => (
-                                    <h2 className="mb-2 mt-4 text-lg font-bold first:mt-0">
-                                      {children}
-                                    </h2>
-                                  ),
-                                  h3: ({ children }) => (
-                                    <h3 className="mb-1.5 mt-3 font-bold first:mt-0">
-                                      {children}
-                                    </h3>
-                                  ),
-                                  p: ({ children }) => (
-                                    <p className="mb-2 last:mb-0">{children}</p>
-                                  ),
-                                  ul: ({ children }) => (
-                                    <ul className="mb-2 list-disc space-y-1 pl-5">
-                                      {children}
-                                    </ul>
-                                  ),
-                                  ol: ({ children }) => (
-                                    <ol className="mb-2 list-decimal space-y-1 pl-5">
-                                      {children}
-                                    </ol>
-                                  ),
-                                  strong: ({ children }) => (
-                                    <strong className="font-bold text-gray-900">
-                                      {children}
-                                    </strong>
-                                  ),
-                                  blockquote: ({ children }) => (
-                                    <blockquote className="my-2 border-l-4 border-purple-300 pl-3 text-gray-600">
-                                      {children}
-                                    </blockquote>
-                                  ),
-                                }}
-                              >
-                                {message.text}
-                              </ReactMarkdown>
+                              <AiExplanationText text={message.text} />
                             ) : (
                               message.text
                             )}
