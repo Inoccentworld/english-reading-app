@@ -1481,7 +1481,8 @@ export default function EnglishReadingApp() {
       targetIndex = Math.min(currentIndex + 1, starts.length - 1);
     }
     seekAudio(starts[targetIndex] / 1000);
-    return direction < 0 ? (targetIndex === currentIndex ? "行の先頭" : "前の行") : "次の行";
+    const itemLabel = kind === "line" ? "行" : "単語";
+    return direction < 0 ? (targetIndex === currentIndex ? `${itemLabel}の先頭` : `前の${itemLabel}`) : `次の${itemLabel}`;
   };
 
   const toggleCurrentLineLoop = () => {
@@ -1501,11 +1502,18 @@ export default function EnglishReadingApp() {
     return "off";
   };
 
+  const toggleJapaneseVisibility = () => {
+    if (!selectedUnit) return;
+    const visible = !showAllJapanese;
+    setSelectedUnit({ ...selectedUnit, lines: selectedUnit.lines.map(line => ({ ...line, showJapanese: visible })) });
+    setShowAllJapanese(visible);
+    return visible;
+  };
+
   useEffect(() => {
     const handlePlaybackShortcut = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
       if (currentView !== "reader" || !selectedUnit) return;
-      if (!localUnitMedia[selectedUnit.id]?.audioUrl) return;
       const target = event.target as HTMLElement | null;
       const inPlayer = !!target?.closest("[data-audio-player]");
       if (
@@ -1516,7 +1524,21 @@ export default function EnglishReadingApp() {
         return;
       }
 
-      if (event.code === "Space") {
+      if (event.key.toLowerCase() === "c") {
+        event.preventDefault();
+        if (event.repeat) return;
+        const visible = toggleJapaneseVisibility();
+        showShortcutNotice(visible ? "日本語訳を表示" : "日本語訳を非表示");
+        return;
+      }
+      if (!localUnitMedia[selectedUnit.id]?.audioUrl) return;
+      if (event.key === "," || event.key === ".") {
+        event.preventDefault();
+        const notice = moveByTimedItem("word", event.key === "," ? -1 : 1);
+        if (notice) showShortcutNotice(notice);
+        return;
+      }
+      if (event.code === "Space" || event.key.toLowerCase() === "k") {
         event.preventDefault();
         if (event.repeat) return;
         armedTimedTargetRef.current = null;
@@ -1528,9 +1550,9 @@ export default function EnglishReadingApp() {
         } else { audio.pause(); showShortcutNotice("Ⅱ 一時停止"); }
         return;
       }
-      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight" || ["j", "l"].includes(event.key.toLowerCase())) {
         event.preventDefault();
-        const notice = moveByTimedItem("line", event.key === "ArrowLeft" ? -1 : 1);
+        const notice = moveByTimedItem("line", event.key === "ArrowLeft" || event.key.toLowerCase() === "j" ? -1 : 1);
         if (notice) showShortcutNotice(notice);
         return;
       }
@@ -4620,21 +4642,7 @@ export default function EnglishReadingApp() {
                 </button>
 
                 <button
-                  onClick={() => {
-                    if (!selectedUnit) return;
-                    const nextShowAllJapanese = !showAllJapanese;
-
-                    const updatedUnit = {
-                      ...selectedUnit,
-                      lines: selectedUnit.lines.map((l) => ({
-                        ...l,
-                        showJapanese: nextShowAllJapanese,
-                      })),
-                    };
-
-                    setSelectedUnit(updatedUnit);
-                    setShowAllJapanese(nextShowAllJapanese);
-                  }}
+                  onClick={toggleJapaneseVisibility}
                   className={`flex items-center gap-1 bg-blue-600 text-white px-3 py-2 rounded-lg shadow-md hover:bg-blue-700 text-sm ${
                     showAllJapanese ? "opacity-100" : "opacity-50"
                   }`}
