@@ -636,7 +636,7 @@ export default function EnglishReadingApp() {
   const [newVocabularyWord, setNewVocabularyWord] = useState("");
   const [selectedMeaning, setSelectedMeaning] = useState("");
   const [selectedLineId, setSelectedLineId] = useState<number | null>(null);
-  const vocabularySelectionTargetRef = useRef<"word" | "meaning">("meaning");
+  const [vocabularySelectionTarget, setVocabularySelectionTarget] = useState<"word" | "meaning" | null>(null);
   const [showVocabularyForm, setShowVocabularyForm] = useState(false);
   const [aiChats, setAiChats] = useState<AiChatSession[]>([]);
   const [expandedAiChatId, setExpandedAiChatId] = useState<string | null>(null);
@@ -1768,20 +1768,30 @@ export default function EnglishReadingApp() {
     setCurrentView("list");
   };
   const handleTextSelection = (lineId: number) => {
-    const selection = window.getSelection();
-    const text = selection?.toString().trim();
-    if (text) {
-      if (showVocabularyForm) {
-        if (vocabularySelectionTargetRef.current === "meaning") setSelectedMeaning(text);
-        else { setNewVocabularyWord(text); setSelectedText(text); setSelectedLineId(lineId); setDictionaryEntry(null); setDictionaryError(""); }
-      } else {
-        setSelectedText(text);
-        setDictionaryEntry(null);
-        setDictionaryError("");
-        setIsSelectionPanelOpen(true);
-        setSelectedLineId(lineId);
-      }
+    const text = window.getSelection()?.toString().trim();
+    if (text) applySelectedText(text, lineId);
+  };
+
+  const applySelectedText = (text: string, lineId?: number) => {
+    // Search follows the latest selection, independently of the vocabulary draft.
+    setSelectedText(text);
+    if (lineId !== undefined) setSelectedLineId(lineId);
+    setDictionaryEntry(null);
+    setDictionaryError("");
+    setIsSelectionPanelOpen(true);
+    if (showVocabularyForm) {
+      if (vocabularySelectionTarget === "meaning") setSelectedMeaning(text);
+      if (vocabularySelectionTarget === "word") setNewVocabularyWord(text);
     }
+  };
+
+  const clearVocabularyTargetOnBlankClick = (event: React.MouseEvent<HTMLElement>) => {
+    // Only blank space in the registration panel clears the target. Descendant
+    // text, buttons, the script, AI responses, and dictionary content do not.
+    if (!showVocabularyForm || event.target !== event.currentTarget) return;
+    setVocabularySelectionTarget(null);
+    const focused = document.activeElement;
+    if (focused instanceof HTMLInputElement && event.currentTarget.contains(focused)) focused.blur();
   };
 
   const requestAiExplanation = async (
@@ -1941,17 +1951,7 @@ export default function EnglishReadingApp() {
 
   const handleAiResponseSelection = (lineId?: number) => {
     const text = window.getSelection()?.toString().trim();
-    if (!text) return;
-    if (showVocabularyForm) {
-      if (vocabularySelectionTargetRef.current === "meaning") setSelectedMeaning(text);
-      else { setNewVocabularyWord(text); setSelectedText(text); if (lineId !== undefined) setSelectedLineId(lineId); setDictionaryEntry(null); setDictionaryError(""); }
-      return;
-    }
-    setSelectedText(text);
-    setDictionaryEntry(null);
-    setDictionaryError("");
-    if (lineId !== undefined) setSelectedLineId(lineId);
-    setIsSelectionPanelOpen(true);
+    if (text) applySelectedText(text, lineId);
   };
 
   const lastNativeSelectionRef = useRef("");
@@ -1970,7 +1970,7 @@ export default function EnglishReadingApp() {
     if (aiLine !== undefined && start !== end) return;
     const lineId = Number(aiLine ?? start.dataset.selectionLine);
     if (!Number.isFinite(lineId)) return;
-    const key = `${showVocabularyForm ? vocabularySelectionTargetRef.current : "selection"}:${aiLine === undefined ? "script" : "ai"}:${lineId}:${text}`;
+    const key = `${aiLine === undefined ? "script" : "ai"}:${lineId}:${text}`;
     if (lastNativeSelectionRef.current === key) return;
     lastNativeSelectionRef.current = key;
     if (aiLine !== undefined) handleAiResponseSelection(lineId);
@@ -1989,6 +1989,8 @@ export default function EnglishReadingApp() {
       clearTimeout(timer);
       if (!(target instanceof Element) || !target.closest("[data-selection-line], [data-selection-ai-line]")) return;
       isSelectingTextRef.current = true;
+      // A fresh gesture may deliberately select the same text for another field.
+      lastNativeSelectionRef.current = "";
       // Cancel a follow-scroll already in flight before selection started.
       const viewport = document.querySelector<HTMLElement>("[data-reader-scroll]");
       viewport?.scrollTo({ top: viewport.scrollTop, left: viewport.scrollLeft, behavior: "instant" });
@@ -4132,6 +4134,7 @@ export default function EnglishReadingApp() {
             )}
 
             <div
+              onClick={clearVocabularyTargetOnBlankClick}
               style={{ "--reader-player-height": `${dockedPlayerHeight}px` } as React.CSSProperties}
               className={
                 isSelectionPanelOpen
@@ -4144,19 +4147,21 @@ export default function EnglishReadingApp() {
               }
             >
               <div
+                onClick={clearVocabularyTargetOnBlankClick}
                 className={`mx-auto max-w-4xl ${
                   hasStartedAi ? "lg:h-full" : ""
                 }`}
               >
                 {isSelectionPanelOpen && (
                   <div
+                    onClick={clearVocabularyTargetOnBlankClick}
                     className={`relative mb-2 rounded border-l-4 border-yellow-400 bg-yellow-50 p-3 pr-12 ${
                       hasStartedAi
                         ? "lg:mb-0 lg:flex lg:h-full lg:flex-col lg:overflow-hidden"
                         : ""
                     }`}
                   >
-                    <div className="flex flex-wrap items-center gap-2 pr-8">
+                    <div onClick={clearVocabularyTargetOnBlankClick} className="flex flex-wrap items-center gap-2 pr-8">
                       <h3 title={selectedText} className="min-w-0 max-w-full truncate text-sm font-semibold text-gray-800">
                         {selectedText
                           ? `「${selectedText}」を選択中`
@@ -4167,7 +4172,7 @@ export default function EnglishReadingApp() {
                           onClick={() => {
                             setNewVocabularyWord(selectedText);
                             setSelectedMeaning("");
-                            vocabularySelectionTargetRef.current = "meaning";
+                            setVocabularySelectionTarget("meaning");
                             setShowVocabularyForm(true);
                             window.getSelection()?.removeAllRanges();
                             lastNativeSelectionRef.current = "";
@@ -4208,7 +4213,7 @@ export default function EnglishReadingApp() {
                           setIsSelectionPanelOpen(false);
                           setNewVocabularyWord("");
                           setSelectedMeaning("");
-                          vocabularySelectionTargetRef.current = "meaning";
+                          setVocabularySelectionTarget(null);
                           setSelectedLineId(null);
                           setShowVocabularyForm(false);
                           setAiChats([]);
@@ -4226,17 +4231,19 @@ export default function EnglishReadingApp() {
                     </button>
 
                     {showVocabularyForm && (
-                      <div className="mt-2 rounded border border-yellow-200 bg-white/70 p-2">
+                      <div data-vocabulary-selection-target={vocabularySelectionTarget ?? "none"} onClick={clearVocabularyTargetOnBlankClick} className="mt-2 rounded border border-yellow-200 bg-white/70 p-2">
                         <label className="mb-2 flex items-center gap-2 text-sm text-gray-700">
                           <span className="w-16 shrink-0 font-medium">見出し語</span>
                           <input
                             type="text"
+                            aria-label="見出し語"
                             value={newVocabularyWord}
-                            onFocus={() => { vocabularySelectionTargetRef.current = "word"; }}
+                            onFocus={() => setVocabularySelectionTarget("word")}
+                            onClick={() => setVocabularySelectionTarget("word")}
                             onChange={(event) =>
                               setNewVocabularyWord(event.target.value)
                             }
-                            className="min-w-0 flex-1 rounded border border-yellow-300 bg-white px-2 py-1.5"
+                            className={`min-w-0 flex-1 rounded border bg-white px-2 py-1.5 outline-none ${vocabularySelectionTarget === "word" ? "border-blue-500 ring-1 ring-blue-300" : "border-gray-300"}`}
                           />
                         </label>
                         {(
@@ -4244,17 +4251,19 @@ export default function EnglishReadingApp() {
                             <span className="w-16 shrink-0 font-medium">意味</span>
                             <input
                               type="text"
+                              aria-label="意味"
                               value={selectedMeaning}
-                              onFocus={() => { vocabularySelectionTargetRef.current = "meaning"; }}
+                              onFocus={() => setVocabularySelectionTarget("meaning")}
+                              onClick={() => setVocabularySelectionTarget("meaning")}
                               onChange={(event) =>
                                 setSelectedMeaning(event.target.value)
                               }
-                              className="min-w-0 flex-1 rounded border border-blue-300 bg-white px-2 py-1.5"
+                              className={`min-w-0 flex-1 rounded border bg-white px-2 py-1.5 outline-none ${vocabularySelectionTarget === "meaning" ? "border-blue-500 ring-1 ring-blue-300" : "border-gray-300"}`}
                               placeholder="和訳を選択するか入力してください"
                             />
                           </label>
                         )}
-                        <div className="flex flex-wrap gap-2 pl-[4.5rem]">
+                        <div onClick={clearVocabularyTargetOnBlankClick} className="flex flex-wrap gap-2 pl-[4.5rem]">
                         <button
                           onClick={async () => {
                             const word = newVocabularyWord.trim();
@@ -4289,7 +4298,7 @@ export default function EnglishReadingApp() {
 
                             setNewVocabularyWord("");
                             setSelectedMeaning("");
-                            vocabularySelectionTargetRef.current = "meaning";
+                            setVocabularySelectionTarget(null);
                             setShowVocabularyForm(false);
                             setSelectedText("");
                             setSelectedLineId(null);
