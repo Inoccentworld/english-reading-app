@@ -68,10 +68,15 @@ export default function FloatingPlayer({ playing, onPlayback, onPrevious, onNext
   }, []);
   const isDocked = docked && expanded;
   useEffect(() => { onDockHeight?.(isDocked ? height : 0); return () => onDockHeight?.(0); }, [isDocked, height, onDockHeight]);
-  return <><div ref={panel} style={isDocked ? { left: 0, bottom: 0, width: "100%" } : position ? { left: position.left, top: position.top } : { left: 12, bottom: 12 }}
+  return <><div ref={panel} data-audio-player style={isDocked ? { left: 0, bottom: 0, width: "100%" } : position ? { left: position.left, top: position.top } : { left: 12, bottom: 12 }}
     onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onLostPointerCapture={endDrag}
     onKeyDownCapture={() => { suppressClick.current = false; }}
     onClickCapture={(e) => { if (suppressClick.current) { e.preventDefault(); e.stopPropagation(); suppressClick.current = false; } }}
+    onClick={e => {
+      if (e.detail > 0 && e.target instanceof Element) {
+        e.target.closest<HTMLElement>("button, [data-resize-edge]")?.blur();
+      }
+    }}
     className={`group/player fixed z-[55] border border-gray-200 bg-white/95 shadow-lg backdrop-blur ${expanded ? isDocked ? "rounded-t-xl" : "w-[min(720px,calc(100vw-16px))] rounded-xl" : size === 1 ? "w-44 touch-none select-none cursor-grab rounded-full p-2 active:cursor-grabbing" : "h-16 w-16 rounded-full"}`}>
     <div className="pointer-events-none absolute -inset-1 rounded-[inherit] border-[6px] border-gray-400/0 transition-colors group-hover/player:border-gray-400/20 group-focus-within/player:border-gray-400/20" />
     {expanded && <div className="relative flex h-8 items-center gap-2 px-3 pr-9"><div className="shrink-0">{header}</div><div aria-label="プレイヤーをドラッグして移動" title="ここをつまんで移動（下端で固定、上へドラッグで解除）" className="flex min-w-6 flex-1 self-stretch touch-none select-none cursor-grab items-center justify-center text-gray-400 active:cursor-grabbing"><GripHorizontal size={22} /></div><div className="flex shrink-0 items-center gap-2">{headerRight}</div></div>}

@@ -1507,9 +1507,11 @@ export default function EnglishReadingApp() {
       if (currentView !== "reader" || !selectedUnit) return;
       if (!localUnitMedia[selectedUnit.id]?.audioUrl) return;
       const target = event.target as HTMLElement | null;
+      const inPlayer = !!target?.closest("[data-audio-player]");
       if (
         target?.isContentEditable ||
-        target?.closest("input, textarea, select, button, a, [role='slider'], [role='button'], [contenteditable='true']")
+        target?.closest("input, textarea, select, [role='slider'], [contenteditable='true']") ||
+        (!inPlayer && target?.closest("button, a, [role='button']"))
       ) {
         return;
       }
