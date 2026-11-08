@@ -10,6 +10,7 @@ import React, {
 } from "react";
 import ReaderSearchResults, { type DictionaryEntry, type DictionarySearch } from "./ReaderSearchResults";
 import ReaderPanels from "./ReaderPanels";
+import { getScriptSelection, revealScriptSelection } from "@/lib/readerSelection";
 import TimingEditor from "./TimingEditor";
 import FloatingPlayer from "./FloatingPlayer";
 import AudioTimeline, { type AudioTimelineHandle } from "./AudioTimeline";
@@ -1516,6 +1517,14 @@ export default function EnglishReadingApp() {
     return "off";
   };
 
+  const togglePhoneticVisibility = () => {
+    if (!selectedUnit) return;
+    const visible = !showAllPhonetic;
+    setSelectedUnit({ ...selectedUnit, lines: selectedUnit.lines.map(line => ({ ...line, showPhonetic: visible })) });
+    setShowAllPhonetic(visible);
+    return visible;
+  };
+
   const toggleJapaneseVisibility = () => {
     if (!selectedUnit) return;
     const visible = !showAllJapanese;
@@ -1541,6 +1550,13 @@ export default function EnglishReadingApp() {
         if (event.repeat) return;
         const visible = toggleJapaneseVisibility();
         showShortcutNotice(visible ? "日本語訳を表示" : "日本語訳を非表示");
+        return;
+      }
+      if (event.key.toLowerCase() === "v") {
+        event.preventDefault();
+        if (event.repeat) return;
+        const visible = togglePhoneticVisibility();
+        showShortcutNotice(visible ? "発音記号を表示" : "発音記号を非表示");
         return;
       }
       if (!localUnitMedia[selectedUnit.id]?.audioUrl) return;
@@ -1775,8 +1791,11 @@ export default function EnglishReadingApp() {
     setCurrentView("list");
   };
   const handleTextSelection = (lineId: number) => {
-    const text = window.getSelection()?.toString().trim();
-    if (text) applySelectedText(text, lineId);
+    const selected = getScriptSelection(window.getSelection());
+    if (selected?.text) {
+      scriptSelectionRangeRef.current = selected.range;
+      applySelectedText(selected.text, lineId);
+    }
   };
 
   const applySelectedText = (text: string, lineId?: number) => {
@@ -1955,6 +1974,46 @@ export default function EnglishReadingApp() {
   };
 
   const lastNativeSelectionRef = useRef("");
+  const scriptSelectionRangeRef = useRef<Range | null>(null);
+  useLayoutEffect(() => {
+    if (currentView !== "reader" || (!isSelectionPanelOpen && !hasReaderSidePanel)) return;
+    const viewport = document.querySelector<HTMLElement>("[data-reader-scroll]");
+    if (!viewport) return;
+    let frame = 0;
+    const reveal = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (isSelectingTextRef.current || selectionPointerIdsRef.current.size || selectionTouchCountRef.current) return;
+        const fallback = selectedLineId === null ? null : viewport.querySelector<HTMLElement>(`[data-reader-line-id="${selectedLineId}"]`);
+        revealScriptSelection(viewport, scriptSelectionRangeRef.current, fallback);
+      });
+    };
+    const observer = new ResizeObserver(reveal);
+    observer.observe(viewport);
+    document.querySelectorAll<HTMLElement>("[data-reader-panels], [data-reader-selection-controls], [data-audio-player]").forEach(element => observer.observe(element));
+    window.visualViewport?.addEventListener("resize", reveal);
+    window.visualViewport?.addEventListener("scroll", reveal);
+    reveal();
+    return () => {
+      cancelAnimationFrame(frame); observer.disconnect();
+      window.visualViewport?.removeEventListener("resize", reveal);
+      window.visualViewport?.removeEventListener("scroll", reveal);
+    };
+  }, [currentView, isSelectionPanelOpen, hasReaderSidePanel, readerPanelsHeight, readerControlsHeight, dockedPlayerHeight, selectedLineId, selectedText, showVocabularyForm, expandedSearchId]);
+  useEffect(() => {
+    if (currentView !== "reader") return;
+    const copy = (event: ClipboardEvent) => {
+      // Inputs have their own selection; a stale script range must not replace it.
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && (focused.matches("input, textarea") || focused.isContentEditable)) return;
+      const selected = getScriptSelection(window.getSelection());
+      if (!selected?.text || !event.clipboardData) return;
+      event.clipboardData.setData("text/plain", selected.text);
+      event.preventDefault();
+    };
+    document.addEventListener("copy", copy);
+    return () => document.removeEventListener("copy", copy);
+  }, [currentView]);
   useLayoutEffect(() => {
     // Invalidate pending lookups as well as already visible results for this unit.
     readerContextEpochRef.current += 1;
@@ -1964,13 +2023,15 @@ export default function EnglishReadingApp() {
     setDictionarySearches([]); setAiChats([]); setExpandedSearchId(null); searchOrderRef.current = 0;
     setShowVocabularyQuickView(false); setQuickVocabularySearch(""); setReaderPanelTab("selection");
     readerPanelScrollRef.current = {}; lastNativeSelectionRef.current = "";
+    scriptSelectionRangeRef.current = null;
     dictionaryCacheRef.current.clear();
     window.getSelection()?.removeAllRanges();
   }, [selectedUnit?.id]);
   const readNativeSelection = useEffectEvent(() => {
     if (selectionPointerIdsRef.current.size || selectionTouchCountRef.current) return;
     const selection = window.getSelection();
-    const text = selection?.toString().trim();
+    const scriptSelection = getScriptSelection(selection);
+    const text = scriptSelection?.text ?? selection?.toString().trim();
     if (!text || !selection?.rangeCount) { lastNativeSelectionRef.current = ""; return; }
     const elementOf = (node: Node | null) => node instanceof Element ? node : node?.parentElement;
     const start = elementOf(selection.anchorNode)?.closest<HTMLElement>(READER_SELECTION_SELECTOR);
@@ -1985,7 +2046,7 @@ export default function EnglishReadingApp() {
     if (source !== "script" && start !== end) return;
     const lineId = Number(dictionaryLine ?? aiLine ?? start.dataset.selectionLine);
     if (!Number.isFinite(lineId)) return;
-    const key = `${source}:${lineId}:${text}`;
+    const key = `${source}:${scriptSelection?.kind ?? ""}:${lineId}:${text}`;
     if (lastNativeSelectionRef.current === key) return;
     lastNativeSelectionRef.current = key;
     if (source !== "script") handleAiResponseSelection(lineId);
@@ -3831,13 +3892,13 @@ export default function EnglishReadingApp() {
                           ? "cursor-pointer"
                           : "cursor-text"
                       }`}
-                      data-selection-line={line.id}
+                      data-selection-line={line.id} data-reader-text-kind="english"
                     >
                       {line.showPhonetic &&
                         line.phonetic &&
                         !canAlignSegments &&
                         !canAlignPhonetic && (
-                        <div className="mb-1 break-words text-[length:var(--reader-ipa-font)] leading-snug text-gray-500 [overflow-wrap:anywhere]">
+                        <div data-reader-text-kind="phonetic" className="mb-1 break-words text-[length:var(--reader-ipa-font)] leading-snug text-gray-500 [overflow-wrap:anywhere]">
                           {line.phonetic}
                         </div>
                       )}
@@ -3887,7 +3948,7 @@ export default function EnglishReadingApp() {
                                     }`}
                                   >
                                     {segment.text}
-                                    <rt className="text-[length:var(--reader-ipa-font)] font-normal leading-none text-gray-500">
+                                    <rt data-reader-text-kind="phonetic" className="text-[length:var(--reader-ipa-font)] font-normal leading-none text-gray-500">
                                       {phonetic}
                                     </rt>
                                   </ruby>
@@ -3919,7 +3980,7 @@ export default function EnglishReadingApp() {
                             const timedWord = timedLine?.words[index];
                             return (
                             <ruby
-                              key={`${line.id}-${index}`}
+                              data-reader-copy-word key={`${line.id}-${index}`}
                               onClick={(event) => {
                                 if (window.getSelection()?.toString().trim()) return;
                                 if (!timedWord) return;
@@ -3937,7 +3998,7 @@ export default function EnglishReadingApp() {
                               }`}
                             >
                               {word}
-                              <rt className="text-[length:var(--reader-ipa-font)] font-normal leading-none text-gray-500">
+                              <rt data-reader-text-kind="phonetic" className="text-[length:var(--reader-ipa-font)] font-normal leading-none text-gray-500">
                                 {phoneticWords[index]}
                               </rt>
                             </ruby>
@@ -3989,7 +4050,7 @@ export default function EnglishReadingApp() {
                     {line.showJapanese && line.japanese && (
                       <div
                         className="mt-0.5 border-l-2 border-gray-200 pl-2 text-[length:var(--reader-translation-font)] leading-snug text-gray-600"
-                        data-selection-line={line.id}
+                        data-selection-line={line.id} data-reader-text-kind="japanese"
                       >
                         {line.japanese}
                       </div>
@@ -4514,21 +4575,9 @@ export default function EnglishReadingApp() {
                   <span className="sr-only">単語帳</span>
                 </button>
                 <button
-                  onClick={() => {
-                    if (!selectedUnit) return;
-                    const nextShowAllPhonetic = !showAllPhonetic;
-
-                    const updatedUnit = {
-                      ...selectedUnit,
-                      lines: selectedUnit.lines.map((l) => ({
-                        ...l,
-                        showPhonetic: nextShowAllPhonetic,
-                      })),
-                    };
-
-                    setSelectedUnit(updatedUnit);
-                    setShowAllPhonetic(nextShowAllPhonetic);
-                  }}
+                  onClick={togglePhoneticVisibility}
+                  title="発音記号の表示切替（V）"
+                  aria-keyshortcuts="v"
                   className={`flex items-center gap-1 bg-green-600 text-white px-3 py-2 rounded-lg shadow-md hover:bg-green-700 text-sm ${
                     showAllPhonetic ? "opacity-100" : "opacity-50"
                   }`}
