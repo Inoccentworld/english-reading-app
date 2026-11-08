@@ -18,6 +18,42 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+.reader-app { --reader-side-width: 46vw; }
+@media (min-width: 1280px) { .reader-app { --reader-side-width: 42vw; } }
+.reader-script-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(156 163 175 / 35%) transparent;
+}
+.reader-script-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+.reader-script-scroll::-webkit-scrollbar-track { background: transparent; }
+.reader-script-scroll::-webkit-scrollbar-thumb { background: rgb(156 163 175 / 35%); border-radius: 8px; }
+.reader-script-scroll:hover { scrollbar-color: rgb(156 163 175 / 55%) transparent; }
+.reader-script-scroll::-webkit-scrollbar-thumb:hover { background: rgb(156 163 175 / 55%); }
+
+@media (min-width: 900px), (min-width: 640px) and (min-aspect-ratio: 4/3) {
+  .reader-script-layout--side {
+    margin-left: 0;
+    margin-right: var(--reader-side-width);
+    width: calc(100% - var(--reader-side-width));
+    max-width: none;
+  }
+  .reader-detail-panel--side {
+    position: fixed;
+    right: 0;
+    bottom: var(--reader-player-height);
+    height: calc(100dvh - var(--reader-player-height));
+    max-height: calc(100dvh - var(--reader-player-height));
+    width: var(--reader-side-width);
+    border-left: 1px solid #d1d5db;
+  }
+  .reader-detail-panel--side > .reader-width-resize { display: block; }
+  .reader-detail-panel--side > .reader-height-resize { display: none; }
+  .reader-tools--side {
+    right: calc(var(--reader-side-width) + 0.75rem);
+    bottom: var(--reader-tools-desktop-bottom);
+  }
+}
 /* === スマホで背景が白く霞む問題の修正 === */
 body {
   background: #f9fafb; /* 固定の淡い背景色 */

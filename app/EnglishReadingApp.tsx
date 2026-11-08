@@ -8,11 +8,13 @@ import React, {
   useRef,
   useState,
 } from "react";
-import AiExplanationText from "./AiExplanationText";
+import ReaderSearchResults, { type DictionaryEntry, type DictionarySearch } from "./ReaderSearchResults";
+import ReaderPanels from "./ReaderPanels";
 import TimingEditor from "./TimingEditor";
 import FloatingPlayer from "./FloatingPlayer";
 import AudioTimeline, { type AudioTimelineHandle } from "./AudioTimeline";
 const PLAYBACK_RATES = [0.5, 0.75, 0.85, 1, 1.25, 1.5, 2];
+const READER_SELECTION_SELECTOR = "[data-selection-line], [data-selection-ai-line], [data-selection-dictionary-line]";
 import VocabularyScope, { type ScopeItem } from "./VocabularyScope";
 import {
   ArrowLeft,
@@ -35,6 +37,8 @@ import {
   Folder,
   FolderPlus,
   MoreVertical,
+  Check,
+  Trash2,
   Save,
   ChevronDown,
   ChevronLeft,
@@ -182,22 +186,12 @@ type AiMessage = {
 
 type AiChatSession = {
   id: string;
+  order: number;
   subject: string;
   lineId: number;
   messages: AiMessage[];
   isLoading: boolean;
   error: string;
-};
-
-type DictionaryEntry = {
-  word: string;
-  headword: string;
-  phonetic: string;
-  definitions: {
-    partOfSpeech: string;
-    definition: string;
-  }[];
-  example: string;
 };
 
 type PhoneticReviewIssue = {
@@ -639,18 +633,46 @@ export default function EnglishReadingApp() {
   const [vocabularySelectionTarget, setVocabularySelectionTarget] = useState<"word" | "meaning" | null>(null);
   const [showVocabularyForm, setShowVocabularyForm] = useState(false);
   const [aiChats, setAiChats] = useState<AiChatSession[]>([]);
-  const [expandedAiChatId, setExpandedAiChatId] = useState<string | null>(null);
-  const [aiQuestion, setAiQuestion] = useState("");
-  const [showAiQuestionInput, setShowAiQuestionInput] = useState(false);
-  const [dictionaryEntry, setDictionaryEntry] =
-    useState<DictionaryEntry | null>(null);
-  const [dictionaryError, setDictionaryError] = useState("");
-  const [isDictionaryLoading, setIsDictionaryLoading] = useState(false);
+  const [expandedSearchId, setExpandedSearchId] = useState<string | null>(null);
+  const [dictionarySearches, setDictionarySearches] = useState<DictionarySearch[]>([]);
+  const searchOrderRef = useRef(0);
+  const isDictionaryLoading = dictionarySearches.some(search => search.isLoading);
   const [showToast, setShowToast] = useState(false);
   const [showAllJapanese, setShowAllJapanese] = useState(false);
   const [showAllPhonetic, setShowAllPhonetic] = useState(false);
   const [showVocabularyQuickView, setShowVocabularyQuickView] = useState(false);
   const [quickVocabularySearch, setQuickVocabularySearch] = useState("");
+  const [readerPanelsHeight, setReaderPanelsHeight] = useState(0);
+  const [readerSideWidth, setReaderSideWidth] = useState<number | null>(null);
+  const [readerControlsHeight, setReaderControlsHeight] = useState(0);
+  const readerControlsRef = useRef<HTMLDivElement>(null);
+  const readerContextEpochRef = useRef(0);
+  const isExplanationPanelOpen = dictionarySearches.length > 0 || aiChats.length > 0;
+  const [readerPanelTab, setReaderPanelTab] = useState<"selection" | "vocabulary">("selection");
+  const activeReaderPanel = readerPanelTab === "vocabulary" && showVocabularyQuickView ? "vocabulary" : isExplanationPanelOpen ? "selection" : "vocabulary";
+  const readerPanelScrollRef = useRef<Record<string, { element: HTMLElement; top: number; left: number }[]>>({});
+  const switchReaderPanelTab = (tab: "selection" | "vocabulary") => {
+    const current = document.getElementById(`reader-${activeReaderPanel}-panel`);
+    if (current) readerPanelScrollRef.current[activeReaderPanel] = [current, ...current.querySelectorAll<HTMLElement>("*")]
+      .filter(element => element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth)
+      .map(element => ({ element, top: element.scrollTop, left: element.scrollLeft }));
+    setReaderPanelTab(tab);
+  };
+  useLayoutEffect(() => {
+    readerPanelScrollRef.current[activeReaderPanel]?.forEach(({ element, top, left }) => {
+      if (element.isConnected) { element.scrollTop = top; element.scrollLeft = left; }
+    });
+  }, [activeReaderPanel]);
+  useLayoutEffect(() => {
+    const element = readerControlsRef.current;
+    if (!element) { setReaderControlsHeight(0); return; }
+    const measure = () => setReaderControlsHeight(element.getBoundingClientRect().height);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [isSelectionPanelOpen, currentView]);
+  const [readerTextSize, setReaderTextSize] = useState<"large" | "medium" | "small">("large");
   const [vocabFolder, setVocabFolder] = useState("");
   const [vocabSelection, setVocabSelection] = useState<ScopeItem[]>([]);
   const [vocabularyMenuId, setVocabularyMenuId] = useState<string | null>(null);
@@ -658,6 +680,8 @@ export default function EnglishReadingApp() {
     useState<VocabularyType | null>(null);
   const [editVocabularyWord, setEditVocabularyWord] = useState("");
   const [editVocabularyMeaning, setEditVocabularyMeaning] = useState("");
+  const [vocabularyEditField, setVocabularyEditField] = useState<"word" | "meaning">("word");
+  const [isSavingVocabulary, setIsSavingVocabulary] = useState(false);
 
   // 編集用 state
   const [editingUnit, setEditingUnit] = useState<UnitType | null>(null);
@@ -722,18 +746,12 @@ export default function EnglishReadingApp() {
   const [generatingUnitField, setGeneratingUnitField] = useState<
     "translation" | "phonetic" | "both" | null
   >(null);
-  const hasStartedAi = aiChats.length > 0;
-  const hasReaderSidePanel = hasStartedAi || showVocabularyQuickView;
+  const hasReaderSidePanel = isExplanationPanelOpen || showVocabularyQuickView;
   const isAiLoading = aiChats.some((chat) => chat.isLoading);
-  const activeAiChat =
-    aiChats.find((chat) => chat.id === expandedAiChatId) ?? null;
-  const aiMessages = activeAiChat?.messages ?? [];
-  const aiError = activeAiChat?.error ?? "";
   const readingScrollAnchorRef = useRef<{
     element: HTMLElement;
     top: number;
   } | null>(null);
-  const aiChatHeadersRef = useRef<HTMLDivElement>(null);
   const dictionaryCacheRef = useRef(new Map<string, DictionaryEntry>());
   const selectionPointerIdsRef = useRef(new Set<number>());
   const selectionTouchCountRef = useRef(0);
@@ -787,15 +805,6 @@ export default function EnglishReadingApp() {
       else window.scrollBy(0, topDifference);
     }
   }, [hasReaderSidePanel]);
-
-  useEffect(() => {
-    const container = aiChatHeadersRef.current;
-    if (!container) return;
-    const frame = window.requestAnimationFrame(() => {
-      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [aiChats.length]);
 
   // === 初期ロード ===
   const loadAll = async () => {
@@ -1520,11 +1529,9 @@ export default function EnglishReadingApp() {
       if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
       if (currentView !== "reader" || !selectedUnit) return;
       const target = event.target as HTMLElement | null;
-      const inPlayer = !!target?.closest("[data-audio-player]");
       if (
         target?.isContentEditable ||
-        target?.closest("input, textarea, select, [role='slider'], [contenteditable='true']") ||
-        (!inPlayer && target?.closest("button, a, [role='button']"))
+        target?.closest("input, textarea, select, [role='slider'], [contenteditable='true']")
       ) {
         return;
       }
@@ -1776,8 +1783,6 @@ export default function EnglishReadingApp() {
     // Search follows the latest selection, independently of the vocabulary draft.
     setSelectedText(text);
     if (lineId !== undefined) setSelectedLineId(lineId);
-    setDictionaryEntry(null);
-    setDictionaryError("");
     setIsSelectionPanelOpen(true);
     if (showVocabularyForm) {
       if (vocabularySelectionTarget === "meaning") setSelectedMeaning(text);
@@ -1861,13 +1866,11 @@ export default function EnglishReadingApp() {
     }
   };
 
-  const askAiFollowUp = async (chatId: string) => {
-    const question = aiQuestion.trim();
+  const askAiFollowUp = async (chatId: string, submittedQuestion: string) => {
+    const question = submittedQuestion.trim();
     const chat = aiChats.find((item) => item.id === chatId);
     if (!question || !chat || chat.isLoading) return;
     const messages = [...chat.messages, { role: "user" as const, text: question }];
-    setAiQuestion("");
-    setShowAiQuestionInput(false);
     setAiChats((current) =>
       current.map((item) =>
         item.id === chatId ? { ...item, messages } : item,
@@ -1880,13 +1883,16 @@ export default function EnglishReadingApp() {
     const subject = selectedText.trim();
     const lineId = selectedLineId;
     if (!subject || lineId === null) return;
+    if (!hasReaderSidePanel) captureReadingScrollAnchor();
+    switchReaderPanelTab("selection");
 
-    if (!hasStartedAi) captureReadingScrollAnchor();
     const chatId = crypto.randomUUID();
+    const order = ++searchOrderRef.current;
     setAiChats((current) => [
       ...current,
       {
         id: chatId,
+        order,
         subject,
         lineId,
         messages: [],
@@ -1894,59 +1900,53 @@ export default function EnglishReadingApp() {
         error: "",
       },
     ]);
-    setExpandedAiChatId(chatId);
-    setShowAiQuestionInput(false);
-    setAiQuestion("");
+    setExpandedSearchId(chatId);
     void requestAiExplanation(chatId, [], subject, lineId);
   };
 
-  const searchDictionary = async () => {
-    const term = selectedText.trim();
-    const lineId = selectedLineId;
-    if (!term || lineId === null || !selectedUnit) return;
-
-    const cacheKey = term.toLocaleLowerCase();
-    const cachedEntry = dictionaryCacheRef.current.get(cacheKey);
-    setDictionaryError("");
-    if (cachedEntry) {
-      setDictionaryEntry(cachedEntry);
-      return;
-    }
-
-    const sourceLine =
-      selectedUnit.lines.find((line) => line.id === lineId)?.english ?? "";
-    const matchIndex = sourceLine.toLocaleLowerCase().indexOf(cacheKey);
-    const before = matchIndex >= 0 ? sourceLine.slice(0, matchIndex) : "";
-    const after =
-      matchIndex >= 0 ? sourceLine.slice(matchIndex + term.length) : "";
-    const leftContext = before.match(
-      /[\p{L}\p{N}'-]+(?=[^\p{L}\p{N}'-]*$)/u,
-    )?.[0];
-    const rightContext = after.match(/[\p{L}\p{N}'-]+/u)?.[0];
-
-    setDictionaryEntry(null);
-    setIsDictionaryLoading(true);
+  const fetchDictionarySearch = async (search: DictionarySearch) => {
+    const contextEpoch = readerContextEpochRef.current;
+    setDictionarySearches(current => current.map(item => item.id === search.id ? { ...item, error: "", isLoading: true } : item));
     try {
       const response = await fetch("/api/dictionary", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ term, leftContext, rightContext }),
+        body: JSON.stringify({ term: search.subject, leftContext: search.leftContext, rightContext: search.rightContext }),
       });
-      const result = (await response.json()) as DictionaryEntry & {
-        error?: string;
-      };
-      if (!response.ok || !result.definitions?.length) {
-        throw new Error(result.error || "辞書を検索できませんでした。");
-      }
-      dictionaryCacheRef.current.set(cacheKey, result);
-      setDictionaryEntry(result);
+      const result = (await response.json()) as DictionaryEntry & { error?: string };
+      if (contextEpoch !== readerContextEpochRef.current) return;
+      if (!response.ok || !result.definitions?.length) throw new Error(result.error || "辞書を検索できませんでした。");
+      dictionaryCacheRef.current.set(search.subject.toLocaleLowerCase(), result);
+      setDictionarySearches(current => current.map(item => item.id === search.id ? { ...item, entry: result, error: "", isLoading: false } : item));
     } catch (error) {
-      setDictionaryError(
-        getAiRequestErrorMessage(error, "辞書を検索できませんでした。"),
-      );
-    } finally {
-      setIsDictionaryLoading(false);
+      if (contextEpoch !== readerContextEpochRef.current) return;
+      setDictionarySearches(current => current.map(item => item.id === search.id ? {
+        ...item, error: getAiRequestErrorMessage(error, "辞書を検索できませんでした。"), isLoading: false,
+      } : item));
     }
+  };
+
+  const searchDictionary = () => {
+    const term = selectedText.trim();
+    const lineId = selectedLineId;
+    if (!term || lineId === null || !selectedUnit) return;
+    if (!hasReaderSidePanel) captureReadingScrollAnchor();
+    switchReaderPanelTab("selection");
+    const cacheKey = term.toLocaleLowerCase();
+    const sourceLine = selectedUnit.lines.find(line => line.id === lineId)?.english ?? "";
+    const matchIndex = sourceLine.toLocaleLowerCase().indexOf(cacheKey);
+    const before = matchIndex >= 0 ? sourceLine.slice(0, matchIndex) : "";
+    const after = matchIndex >= 0 ? sourceLine.slice(matchIndex + term.length) : "";
+    const cached = dictionaryCacheRef.current.get(cacheKey) ?? null;
+    const search: DictionarySearch = {
+      id: crypto.randomUUID(), order: ++searchOrderRef.current, subject: term, lineId,
+      leftContext: before.match(/[\p{L}\p{N}'-]+(?=[^\p{L}\p{N}'-]*$)/u)?.[0],
+      rightContext: after.match(/[\p{L}\p{N}'-]+/u)?.[0],
+      entry: cached, error: "", isLoading: !cached,
+    };
+    setDictionarySearches(current => [...current, search]);
+    setExpandedSearchId(search.id);
+    if (!cached) void fetchDictionarySearch(search);
   };
 
   const handleAiResponseSelection = (lineId?: number) => {
@@ -1955,25 +1955,40 @@ export default function EnglishReadingApp() {
   };
 
   const lastNativeSelectionRef = useRef("");
+  useLayoutEffect(() => {
+    // Invalidate pending lookups as well as already visible results for this unit.
+    readerContextEpochRef.current += 1;
+    setSelectedText(""); setSelectedLineId(null); setIsSelectionPanelOpen(false);
+    setNewVocabularyWord(""); setSelectedMeaning(""); setShowVocabularyForm(false);
+    setVocabularySelectionTarget(null);
+    setDictionarySearches([]); setAiChats([]); setExpandedSearchId(null); searchOrderRef.current = 0;
+    setShowVocabularyQuickView(false); setQuickVocabularySearch(""); setReaderPanelTab("selection");
+    readerPanelScrollRef.current = {}; lastNativeSelectionRef.current = "";
+    dictionaryCacheRef.current.clear();
+    window.getSelection()?.removeAllRanges();
+  }, [selectedUnit?.id]);
   const readNativeSelection = useEffectEvent(() => {
     if (selectionPointerIdsRef.current.size || selectionTouchCountRef.current) return;
     const selection = window.getSelection();
     const text = selection?.toString().trim();
     if (!text || !selection?.rangeCount) { lastNativeSelectionRef.current = ""; return; }
     const elementOf = (node: Node | null) => node instanceof Element ? node : node?.parentElement;
-    const start = elementOf(selection.anchorNode)?.closest<HTMLElement>("[data-selection-line], [data-selection-ai-line]");
-    const end = elementOf(selection.focusNode)?.closest<HTMLElement>("[data-selection-line], [data-selection-ai-line]");
+    const start = elementOf(selection.anchorNode)?.closest<HTMLElement>(READER_SELECTION_SELECTOR);
+    const end = elementOf(selection.focusNode)?.closest<HTMLElement>(READER_SELECTION_SELECTOR);
     if (!start || !end) return;
     const aiLine = start.dataset.selectionAiLine;
+    const dictionaryLine = start.dataset.selectionDictionaryLine;
+    const source = dictionaryLine !== undefined ? "dictionary" : aiLine !== undefined ? "ai" : "script";
+    const endSource = end.dataset.selectionDictionaryLine !== undefined ? "dictionary" : end.dataset.selectionAiLine !== undefined ? "ai" : "script";
     // Do not mix the script, AI messages, or unrelated panels in one selection.
-    if ((aiLine !== undefined) !== (end.dataset.selectionAiLine !== undefined)) return;
-    if (aiLine !== undefined && start !== end) return;
-    const lineId = Number(aiLine ?? start.dataset.selectionLine);
+    if (source !== endSource) return;
+    if (source !== "script" && start !== end) return;
+    const lineId = Number(dictionaryLine ?? aiLine ?? start.dataset.selectionLine);
     if (!Number.isFinite(lineId)) return;
-    const key = `${aiLine === undefined ? "script" : "ai"}:${lineId}:${text}`;
+    const key = `${source}:${lineId}:${text}`;
     if (lastNativeSelectionRef.current === key) return;
     lastNativeSelectionRef.current = key;
-    if (aiLine !== undefined) handleAiResponseSelection(lineId);
+    if (source !== "script") handleAiResponseSelection(lineId);
     else handleTextSelection(lineId);
   });
   useEffect(() => {
@@ -1987,7 +2002,7 @@ export default function EnglishReadingApp() {
     };
     const beginSelection = (target: EventTarget | null) => {
       clearTimeout(timer);
-      if (!(target instanceof Element) || !target.closest("[data-selection-line], [data-selection-ai-line]")) return;
+      if (!(target instanceof Element) || !target.closest(READER_SELECTION_SELECTOR)) return;
       isSelectingTextRef.current = true;
       // A fresh gesture may deliberately select the same text for another field.
       lastNativeSelectionRef.current = "";
@@ -2623,6 +2638,7 @@ export default function EnglishReadingApp() {
   };
 
   const cancelVocabularyEdit = () => {
+    if (isSavingVocabulary) return false;
     if (
       hasVocabularyUnsavedChanges &&
       !window.confirm("変更を保存せずに終了しますか？")
@@ -2635,7 +2651,10 @@ export default function EnglishReadingApp() {
     return true;
   };
 
-  const startVocabularyEdit = (item: VocabularyType) => {
+  const startVocabularyEdit = (item: VocabularyType, field: "word" | "meaning" = "word") => {
+    if (isSavingVocabulary) return;
+    setVocabularyEditField(field);
+    if (editingVocabulary?.id === item.id) return;
     if (editingVocabulary?.id !== item.id && !cancelVocabularyEdit()) return;
     setEditingVocabulary(item);
     setEditVocabularyWord(item.word);
@@ -2644,7 +2663,7 @@ export default function EnglishReadingApp() {
   };
 
   const saveVocabularyEdit = async () => {
-    if (!editingVocabulary) return;
+    if (!editingVocabulary || isSavingVocabulary) return;
     const word = editVocabularyWord.trim();
     const meaning = editVocabularyMeaning.trim();
     if (!word || !meaning) {
@@ -2652,17 +2671,19 @@ export default function EnglishReadingApp() {
       return;
     }
 
+    setIsSavingVocabulary(true);
     const { error } = await supabase
       .from("vocabulary")
       .update({ word, meaning })
       .eq("id", editingVocabulary.id);
+    setIsSavingVocabulary(false);
     if (error) {
       alert(`単語の更新に失敗: ${error.message}`);
       return;
     }
 
-    setVocabulary(
-      vocabulary.map((item) =>
+    setVocabulary((current) =>
+      current.map((item) =>
         item.id === editingVocabulary.id ? { ...item, word, meaning } : item,
       ),
     );
@@ -2672,25 +2693,33 @@ export default function EnglishReadingApp() {
   };
 
   const deleteVocabulary = async (item: VocabularyType) => {
+    if (isSavingVocabulary) return;
     if (editingVocabulary?.id !== item.id && !cancelVocabularyEdit()) return;
     if (!window.confirm(`「${item.word}」を削除しますか？`)) return;
 
+    setIsSavingVocabulary(true);
     const { error } = await supabase
       .from("vocabulary")
       .delete()
       .eq("id", item.id);
+    setIsSavingVocabulary(false);
     if (error) {
       alert(`単語の削除に失敗: ${error.message}`);
       return;
     }
 
-    setVocabulary(vocabulary.filter((entry) => entry.id !== item.id));
+    setVocabulary((current) => current.filter((entry) => entry.id !== item.id));
     if (editingVocabulary?.id === item.id) {
       setEditingVocabulary(null);
       setEditVocabularyWord("");
       setEditVocabularyMeaning("");
     }
     setVocabularyMenuId(null);
+  };
+  const handleVocabularyEditKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key === "Enter") { event.preventDefault(); void saveVocabularyEdit(); }
+    if (event.key === "Escape") { event.preventDefault(); cancelVocabularyEdit(); }
   };
   const scopedFolders = new Set<string>();
   const scopedUnitIds = new Set<string>();
@@ -2834,7 +2863,14 @@ export default function EnglishReadingApp() {
 
   // === ここからUI部分 ===
   return (
-    <div onDragEnd={() => { clearDragNavigation(); setDraggedLibraryItem(null); setLibraryDropTarget(null); }} className={`${currentView === "reader" ? "flex h-dvh flex-col overflow-hidden bg-white p-0" : `min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 ${currentView === "list" ? "p-0" : currentView === "vocabulary" ? "px-3 py-2 sm:px-6" : "p-6"}`}`}>
+    <div onClickCapture={event => {
+      // Pointer clicks must not leave toolbar buttons armed for Space/arrow keys.
+      // Tab/Enter activation retains keyboard focus; editing fields are untouched.
+      if (currentView === "reader" && event.detail > 0) {
+        const target = event.target as Element;
+        target.closest<HTMLButtonElement>("button")?.blur();
+      }
+    }} style={readerSideWidth === null ? undefined : { "--reader-side-width": `${readerSideWidth}vw` } as React.CSSProperties} onDragEnd={() => { clearDragNavigation(); setDraggedLibraryItem(null); setLibraryDropTarget(null); }} className={`reader-app ${currentView === "reader" ? "flex h-dvh flex-col overflow-hidden bg-white p-0" : `min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 ${currentView === "list" ? "p-0" : currentView === "vocabulary" ? "px-3 py-2 sm:px-6" : "p-6"}`}`}>
       <div
         className={
           currentView === "reader" && hasReaderSidePanel
@@ -3684,17 +3720,24 @@ export default function EnglishReadingApp() {
         {/* === リーダー画面 === */}
         {currentView === "reader" && (
           <div
-            className={`flex min-h-0 w-full flex-1 flex-col ${
+            className={`reader-script-layout flex min-h-0 w-full flex-1 flex-col ${
               hasReaderSidePanel
-                ? "mx-auto lg:ml-auto lg:mr-[46vw] lg:w-[calc(100%-46vw)] lg:max-w-4xl lg:pr-4 xl:mr-[42vw] xl:w-[calc(100%-42vw)]"
+                ? "reader-script-layout--side"
                 : "mx-auto"
             }`}
           >
             {shortcutNotice && <div key={shortcutNotice.id} role="status" aria-live="polite" aria-atomic="true" style={{ bottom: dockedPlayerHeight > 0 ? dockedPlayerHeight + 12 : 88 }} className="pointer-events-none fixed left-1/2 z-[90] -translate-x-1/2 rounded-xl bg-gray-800/60 px-4 py-2 text-sm font-medium text-white backdrop-blur-sm">{shortcutNotice.text}</div>}
-            <div data-reader-scroll className="min-h-0 flex-1 space-y-1 overflow-y-auto bg-white pb-1 pt-2 pl-10 pr-4">
+            <div data-reader-scroll data-reader-text-size={readerTextSize} style={{
+              "--reader-script-font": readerTextSize === "large" ? "18px" : readerTextSize === "medium" ? "16px" : "14px",
+              "--reader-ipa-font": readerTextSize === "large" ? "14px" : readerTextSize === "medium" ? "12px" : "11px",
+              "--reader-translation-font": readerTextSize === "large" ? "14px" : readerTextSize === "medium" ? "13px" : "12px",
+            } as React.CSSProperties} className="reader-script-scroll min-h-0 flex-1 space-y-1 overflow-y-auto bg-white pb-1 pt-2 pl-10 pr-4">
               <header className="mb-4 flex flex-wrap items-center gap-2 text-sm text-gray-500">
                 <button onClick={() => window.history.back()} className="flex items-center gap-1 rounded px-1 py-1 hover:bg-gray-100" aria-label="ユニット一覧に戻る"><ChevronLeft size={18} />戻る</button>
-                <span className="min-w-0 break-words">{getFolderPath(selectedUnit?.folder_id)} <span className="mx-1 text-gray-300">›</span> <span className="text-gray-700">{selectedUnit?.title}</span></span>
+                <span className="min-w-0 flex-1 break-words">{getFolderPath(selectedUnit?.folder_id)} <span className="mx-1 text-gray-300">›</span> <span className="text-gray-700">{selectedUnit?.title}</span></span>
+                <div role="group" aria-label="スクリプトの文字サイズ" className="ml-auto flex shrink-0 items-center gap-0.5 rounded border border-gray-200 p-0.5 text-xs">
+                  {([{ value: "large", label: "大" }, { value: "medium", label: "中" }, { value: "small", label: "小" }] as const).map(size => <button key={size.value} type="button" aria-label={`文字サイズ：${size.label}`} aria-pressed={readerTextSize === size.value} onClick={() => setReaderTextSize(size.value)} className={`rounded px-2 py-1 ${readerTextSize === size.value ? "bg-gray-200 text-gray-900" : "text-gray-500 hover:bg-gray-100"}`}>{size.label}</button>)}
+                </div>
               </header>
               {selectedUnit?.lines.map((line) => {
                 const timedLine = localUnitMedia[
@@ -3794,12 +3837,12 @@ export default function EnglishReadingApp() {
                         line.phonetic &&
                         !canAlignSegments &&
                         !canAlignPhonetic && (
-                        <div className="mb-1 break-words text-sm leading-snug text-gray-500 [overflow-wrap:anywhere]">
+                        <div className="mb-1 break-words text-[length:var(--reader-ipa-font)] leading-snug text-gray-500 [overflow-wrap:anywhere]">
                           {line.phonetic}
                         </div>
                       )}
                       {canAlignSegments ? (
-                        <div className="max-w-full break-words pt-1 text-lg leading-tight [overflow-wrap:anywhere]">
+                        <div className="max-w-full break-words pt-1 text-[length:var(--reader-script-font)] leading-tight [overflow-wrap:anywhere]">
                           {(() => {
                             let phoneticIndex = 0;
                             let characterOffset = 0;
@@ -3844,7 +3887,7 @@ export default function EnglishReadingApp() {
                                     }`}
                                   >
                                     {segment.text}
-                                    <rt className="text-sm font-normal leading-none text-gray-500">
+                                    <rt className="text-[length:var(--reader-ipa-font)] font-normal leading-none text-gray-500">
                                       {phonetic}
                                     </rt>
                                   </ruby>
@@ -3871,7 +3914,7 @@ export default function EnglishReadingApp() {
                           })()}
                         </div>
                       ) : canAlignPhonetic ? (
-                        <div className="flex flex-wrap items-end gap-x-2 gap-y-0.5 pt-1 text-lg leading-tight">
+                        <div className="flex flex-wrap items-end gap-x-2 gap-y-0.5 pt-1 text-[length:var(--reader-script-font)] leading-tight">
                           {englishWords.map((word, index) => {
                             const timedWord = timedLine?.words[index];
                             return (
@@ -3894,7 +3937,7 @@ export default function EnglishReadingApp() {
                               }`}
                             >
                               {word}
-                              <rt className="text-sm font-normal leading-none text-gray-500">
+                              <rt className="text-[length:var(--reader-ipa-font)] font-normal leading-none text-gray-500">
                                 {phoneticWords[index]}
                               </rt>
                             </ruby>
@@ -3902,7 +3945,7 @@ export default function EnglishReadingApp() {
                           })}
                         </div>
                       ) : (
-                        <div className="break-words text-lg leading-snug [overflow-wrap:anywhere]">
+                        <div className="break-words text-[length:var(--reader-script-font)] leading-snug [overflow-wrap:anywhere]">
                           {(() => {
                             let characterOffset = 0;
                             return pronunciationSegments.map((segment, index) => {
@@ -3945,7 +3988,7 @@ export default function EnglishReadingApp() {
 
                     {line.showJapanese && line.japanese && (
                       <div
-                        className="mt-0.5 border-l-2 border-gray-200 pl-2 text-sm leading-snug text-gray-600"
+                        className="mt-0.5 border-l-2 border-gray-200 pl-2 text-[length:var(--reader-translation-font)] leading-snug text-gray-600"
                         data-selection-line={line.id}
                       >
                         {line.japanese}
@@ -4133,35 +4176,21 @@ export default function EnglishReadingApp() {
               </>
             )}
 
-            <div
+            {isSelectionPanelOpen && <div
+              ref={readerControlsRef} data-reader-selection-controls
               onClick={clearVocabularyTargetOnBlankClick}
-              style={{ "--reader-player-height": `${dockedPlayerHeight}px` } as React.CSSProperties}
-              className={
-                isSelectionPanelOpen
-                  ? `relative z-40 shrink-0 overflow-y-auto border-t-2 border-gray-300 bg-white p-4 pr-24 shadow-lg ${showVocabularyQuickView ? "max-h-[min(30dvh,calc((100dvh-var(--reader-player-height)-64px)/2))]" : "max-h-[min(50dvh,calc(100dvh-var(--reader-player-height)-64px))]"} ${
-                      hasStartedAi
-                        ? "lg:fixed lg:bottom-auto lg:left-auto lg:right-0 lg:top-0 lg:h-[calc(100dvh-var(--reader-player-height))] lg:max-h-none lg:w-[46vw] lg:overflow-hidden lg:border-l-2 lg:border-t-0 lg:p-3 xl:w-[42vw]"
-                        : ""
-                    }`
-                  : "contents"
-              }
+              className="relative z-40 max-h-[35dvh] w-full shrink-0 overflow-y-auto border-t border-gray-200 bg-white px-1 pb-1"
             >
               <div
                 onClick={clearVocabularyTargetOnBlankClick}
-                className={`mx-auto max-w-4xl ${
-                  hasStartedAi ? "lg:h-full" : ""
-                }`}
+                className="w-full min-w-0"
               >
                 {isSelectionPanelOpen && (
                   <div
                     onClick={clearVocabularyTargetOnBlankClick}
-                    className={`relative mb-2 rounded border-l-4 border-yellow-400 bg-yellow-50 p-3 pr-12 ${
-                      hasStartedAi
-                        ? "lg:mb-0 lg:flex lg:h-full lg:flex-col lg:overflow-hidden"
-                        : ""
-                    }`}
+                    className="relative bg-white p-1.5"
                   >
-                    <div onClick={clearVocabularyTargetOnBlankClick} className="flex flex-wrap items-center gap-2 pr-8">
+                    <div onClick={clearVocabularyTargetOnBlankClick} className="flex flex-wrap items-center gap-1.5 pr-7">
                       <h3 title={selectedText} className="min-w-0 max-w-full truncate text-sm font-semibold text-gray-800">
                         {selectedText
                           ? `「${selectedText}」を選択中`
@@ -4208,7 +4237,6 @@ export default function EnglishReadingApp() {
                     </div>
                     <button
                         onClick={() => {
-                          if (hasStartedAi) captureReadingScrollAnchor();
                           setSelectedText("");
                           setIsSelectionPanelOpen(false);
                           setNewVocabularyWord("");
@@ -4216,24 +4244,17 @@ export default function EnglishReadingApp() {
                           setVocabularySelectionTarget(null);
                           setSelectedLineId(null);
                           setShowVocabularyForm(false);
-                          setAiChats([]);
-                          setExpandedAiChatId(null);
-                          setAiQuestion("");
-                          setShowAiQuestionInput(false);
-                          setDictionaryEntry(null);
-                          setDictionaryError("");
-                          setIsDictionaryLoading(false);
                         }}
-                        className="absolute right-2 top-2 rounded border border-gray-300 bg-white/80 p-1.5 text-gray-600 hover:bg-white hover:text-gray-800"
+                        className="absolute right-1 top-1 rounded p-1 text-gray-500 hover:bg-white hover:text-gray-800"
                         aria-label="選択を閉じる"
                       >
                         <X size={16} />
                     </button>
 
                     {showVocabularyForm && (
-                      <div data-vocabulary-selection-target={vocabularySelectionTarget ?? "none"} onClick={clearVocabularyTargetOnBlankClick} className="mt-2 rounded border border-yellow-200 bg-white/70 p-2">
-                        <label className="mb-2 flex items-center gap-2 text-sm text-gray-700">
-                          <span className="w-16 shrink-0 font-medium">見出し語</span>
+                      <div data-vocabulary-selection-target={vocabularySelectionTarget ?? "none"} onClick={clearVocabularyTargetOnBlankClick} className="mt-1 border-t border-gray-200 pt-1">
+                        <label className="mb-1 flex items-center gap-1.5 text-sm text-gray-700">
+                          <span className="w-14 shrink-0 text-xs font-medium">見出し語</span>
                           <input
                             type="text"
                             aria-label="見出し語"
@@ -4247,8 +4268,8 @@ export default function EnglishReadingApp() {
                           />
                         </label>
                         {(
-                          <label className="mb-2 flex items-center gap-2 text-sm text-gray-700">
-                            <span className="w-16 shrink-0 font-medium">意味</span>
+                          <label className="mb-1 flex items-center gap-1.5 text-sm text-gray-700">
+                            <span className="w-14 shrink-0 text-xs font-medium">意味</span>
                             <input
                               type="text"
                               aria-label="意味"
@@ -4263,7 +4284,7 @@ export default function EnglishReadingApp() {
                             />
                           </label>
                         )}
-                        <div onClick={clearVocabularyTargetOnBlankClick} className="flex flex-wrap gap-2 pl-[4.5rem]">
+                        <div onClick={clearVocabularyTargetOnBlankClick} className="flex flex-wrap gap-1.5 pl-[3.875rem]">
                         <button
                           onClick={async () => {
                             const word = newVocabularyWord.trim();
@@ -4302,8 +4323,6 @@ export default function EnglishReadingApp() {
                             setShowVocabularyForm(false);
                             setSelectedText("");
                             setSelectedLineId(null);
-                            setDictionaryEntry(null);
-                            setDictionaryError("");
                           }}
                           disabled={
                             (!newVocabularyWord.trim() ||
@@ -4340,257 +4359,79 @@ export default function EnglishReadingApp() {
                       </div>
                     )}
 
-                    {(dictionaryEntry || dictionaryError) && (
-                      <div className="relative mt-2 rounded border border-emerald-200 bg-white p-3 pr-11 text-sm text-gray-800">
-                        <button
-                          type="button"
-                          aria-label="英英辞書を閉じる"
-                          title="英英辞書を閉じる"
-                          onClick={() => {
-                            setDictionaryEntry(null);
-                            setDictionaryError("");
-                          }}
-                          className="absolute right-2 top-2 rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
-                        >
-                          <X size={16} />
-                        </button>
-                        {dictionaryError ? (
-                          <div className="flex items-center justify-between gap-3 text-red-700">
-                            <span>{dictionaryError}</span>
-                            <button
-                              type="button"
-                              onClick={() => void searchDictionary()}
-                              className="shrink-0 rounded border border-red-300 px-2 py-1 text-xs"
-                            >
-                              再試行
-                            </button>
-                          </div>
-                        ) : (
-                          dictionaryEntry && (
-                            <div>
-                              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                                <h4 className="text-base font-semibold text-emerald-800">
-                                  {dictionaryEntry.headword}
-                                </h4>
-                                {dictionaryEntry.word !== dictionaryEntry.headword && (
-                                  <span className="text-xs text-gray-500">
-                                    searched: {dictionaryEntry.word}
-                                  </span>
-                                )}
-                                {dictionaryEntry.phonetic && (
-                                  <span className="text-gray-600">
-                                    /
-                                    {dictionaryEntry.phonetic.replace(
-                                      /^\/+|\/+$/g,
-                                      "",
-                                    )}
-                                    /
-                                  </span>
-                                )}
-                              </div>
-                              <ol className="mt-2 max-h-52 list-decimal space-y-1 overflow-y-auto pl-5">
-                                {dictionaryEntry.definitions.map(
-                                  (definition, index) => (
-                                    <li key={`${definition.partOfSpeech}-${index}`}>
-                                      <span className="mr-1 text-xs italic text-emerald-700">
-                                        {definition.partOfSpeech}
-                                      </span>
-                                      {definition.definition}
-                                    </li>
-                                  ),
-                                )}
-                              </ol>
-                              {dictionaryEntry.example && (
-                                <p className="mt-2 border-t border-emerald-100 pt-2 text-gray-600">
-                                  <span className="mr-1 text-xs font-medium text-emerald-700">
-                                    Example
-                                  </span>
-                                  {dictionaryEntry.example}
-                                </p>
-                              )}
-                              <p className="mt-2 text-right text-[10px] text-gray-400">
-                                Definitions: Datamuse · IPA: Free Dictionary API
-                              </p>
-                            </div>
-                          )
-                        )}
-                      </div>
-                    )}
-
-                    {aiChats.length > 0 && (
-                      <div
-                        ref={aiChatHeadersRef}
-                        className="mt-2 max-h-[18vh] space-y-1.5 overflow-y-auto border-t border-yellow-200 pt-2 lg:max-h-[28vh]"
-                      >
-                        {aiChats.map((chat) => {
-                          const isExpanded = expandedAiChatId === chat.id;
-                          return (
-                            <button
-                              key={chat.id}
-                              type="button"
-                              onClick={() => {
-                                setExpandedAiChatId(
-                                  isExpanded ? null : chat.id,
-                                );
-                                setAiQuestion("");
-                                setShowAiQuestionInput(false);
-                              }}
-                              className={`flex w-full items-center gap-2 rounded border px-2.5 py-2 text-left text-sm ${
-                                isExpanded
-                                  ? "border-purple-300 bg-purple-50"
-                                  : "border-gray-200 bg-white hover:bg-gray-50"
-                              }`}
-                            >
-                              <span className="text-xs text-purple-600">
-                                {isExpanded ? "▼" : "▶"}
-                              </span>
-                              <span className="min-w-0 flex-1 truncate font-medium text-gray-800">
-                                {chat.subject}
-                              </span>
-                              {chat.isLoading && (
-                                <span className="text-xs text-purple-600">
-                                  生成中...
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    {aiError && (
-                      <div className="mt-2 flex items-center justify-between gap-2 rounded bg-red-50 p-2 text-sm text-red-700">
-                        <span>{aiError}</span>
-                        {activeAiChat && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void requestAiExplanation(
-                                activeAiChat.id,
-                                activeAiChat.messages,
-                                activeAiChat.subject,
-                                activeAiChat.lineId,
-                              )
-                            }
-                            disabled={activeAiChat.isLoading}
-                            className="shrink-0 rounded border border-red-300 bg-white px-2 py-1 text-xs disabled:opacity-50"
-                          >
-                            再試行
-                          </button>
-                        )}
-                      </div>
-                    )}
-
-                    {activeAiChat &&
-                      activeAiChat.isLoading &&
-                      aiMessages.length === 0 && (
-                        <p className="mt-2 text-sm text-purple-700">解説中...</p>
-                      )}
-
-                    {aiMessages.length > 0 && (
-                      <div className="relative mt-2 space-y-2 border-t border-yellow-200 pt-2 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
-                        <div className="max-h-[32vh] space-y-2 overflow-y-auto pb-10 pr-1 md:max-h-[40vh] lg:min-h-0 lg:max-h-none lg:flex-1">
-                          {aiMessages.map((message, index) => (
-                          <div
-                            key={`${message.role}-${index}`}
-                            className={`rounded p-2 text-sm leading-relaxed ${
-                              message.role === "user"
-                                ? "ml-8 whitespace-pre-wrap bg-gray-100 text-gray-700"
-                                : "bg-purple-50 text-gray-800 select-text"
-                            }`}
-                            data-selection-ai-line={message.role === "model" ? activeAiChat?.lineId : undefined}
-                          >
-                            {message.role === "model" ? (
-                              <AiExplanationText text={message.text} />
-                            ) : (
-                              message.text
-                            )}
-                          </div>
-                          ))}
-
-                          {activeAiChat?.isLoading && (
-                            <p className="text-sm text-purple-700">回答中...</p>
-                          )}
-                        </div>
-
-                        <div
-                          className={
-                            showAiQuestionInput
-                              ? "absolute bottom-2 left-2 right-2 z-10 flex gap-2 rounded-lg border border-purple-200 bg-white p-2 shadow-lg"
-                              : "hidden"
-                          }
-                        >
-                          <input
-                            type="text"
-                            value={aiQuestion}
-                            onChange={(event) =>
-                              setAiQuestion(event.target.value)
-                            }
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter") {
-                                event.preventDefault();
-                                if (activeAiChat) {
-                                  void askAiFollowUp(activeAiChat.id);
-                                }
-                              }
-                            }}
-                            placeholder="さらに質問する"
-                            className="min-w-0 flex-1 rounded border border-gray-300 bg-white px-3 py-2 text-sm"
-                          />
-                          <button
-                            onClick={() =>
-                              activeAiChat &&
-                              void askAiFollowUp(activeAiChat.id)
-                            }
-                            disabled={
-                              !aiQuestion.trim() || activeAiChat?.isLoading
-                            }
-                            className="rounded bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:bg-gray-400"
-                          >
-                            質問
-                          </button>
-                        </div>
-                        {!showAiQuestionInput && (
-                          <button
-                            onClick={() => setShowAiQuestionInput(true)}
-                            className="absolute bottom-2 right-2 z-10 rounded-full border border-purple-300 bg-white/95 px-3 py-1.5 text-xs text-purple-700 shadow hover:bg-purple-50"
-                          >
-                            さらに質問
-                          </button>
-                        )}
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
+            </div>}
+
+            {hasReaderSidePanel && <ReaderPanels playerHeight={dockedPlayerHeight} controlsHeight={readerControlsHeight} side={hasReaderSidePanel} onHeightChange={setReaderPanelsHeight} widthPercent={readerSideWidth} onWidthChange={setReaderSideWidth}
+              header={isExplanationPanelOpen ? <div className="flex shrink-0 items-center border-b border-gray-200 px-1 pt-1 text-xs">
+                {showVocabularyQuickView ? <div role="tablist" aria-label="閲覧パネル" className="flex flex-1 gap-1" onKeyDown={event => {
+                  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                  event.preventDefault(); event.stopPropagation();
+                  const tab = event.key === "Home" ? "selection" : event.key === "End" ? "vocabulary" : activeReaderPanel === "selection" ? "vocabulary" : "selection";
+                  switchReaderPanelTab(tab); document.getElementById(`reader-${tab}-tab`)?.focus();
+                }}>
+                  <button id="reader-selection-tab" role="tab" tabIndex={activeReaderPanel === "selection" ? 0 : -1} aria-selected={activeReaderPanel === "selection"} aria-controls="reader-selection-panel" onClick={() => switchReaderPanelTab("selection")} className={`border-b-2 px-2 py-1.5 ${activeReaderPanel === "selection" ? "border-blue-500 text-blue-700" : "border-transparent text-gray-500"}`}>解説・辞書</button>
+                  <button id="reader-vocabulary-tab" role="tab" tabIndex={activeReaderPanel === "vocabulary" ? 0 : -1} aria-selected={activeReaderPanel === "vocabulary"} aria-controls="reader-vocabulary-panel" onClick={() => switchReaderPanelTab("vocabulary")} className={`border-b-2 px-2 py-1.5 ${activeReaderPanel === "vocabulary" ? "border-blue-500 text-blue-700" : "border-transparent text-gray-500"}`}>単語帳 <span className="text-[10px]">{quickVocabulary.length}語</span></button>
+                </div> : <span className="flex-1 px-1 py-1.5 text-gray-500">解説・辞書</span>}
+                <button type="button" aria-label={activeReaderPanel === "vocabulary" ? "単語帳クイックビューを閉じる" : "解説・辞書を閉じる"} title="表示中のパネルを閉じる" className="rounded p-1 text-gray-500 hover:bg-gray-100" onClick={() => {
+                  if (activeReaderPanel === "vocabulary") {
+                    if (!cancelVocabularyEdit()) return;
+                    setShowVocabularyQuickView(false); setQuickVocabularySearch(""); return;
+                  }
+                  if (!showVocabularyQuickView) captureReadingScrollAnchor();
+                  readerContextEpochRef.current += 1;
+                  setDictionarySearches([]); setAiChats([]); setExpandedSearchId(null);
+                }}><X size={16} /></button>
+              </div> : undefined}>
+            <div id="reader-selection-panel" role="tabpanel" aria-label="解説・辞書" hidden={activeReaderPanel !== "selection"} className={isExplanationPanelOpen && activeReaderPanel === "selection" ? "min-h-0 w-full flex-auto overflow-y-auto bg-white px-1 pb-1" : "hidden"}>
+              <div className="w-full min-w-0">
+                {isExplanationPanelOpen && (<div className="relative bg-white p-1.5">
+                    <ReaderSearchResults dictionaries={dictionarySearches} chats={aiChats} expandedId={expandedSearchId} onExpand={setExpandedSearchId}
+                      onCloseDictionary={id => {
+                        if (!showVocabularyQuickView && dictionarySearches.length + aiChats.length === 1) captureReadingScrollAnchor();
+                        setDictionarySearches(current => current.filter(search => search.id !== id));
+                        if (expandedSearchId === id) setExpandedSearchId(null);
+                      }}
+                      onCloseChat={id => {
+                        if (!showVocabularyQuickView && dictionarySearches.length + aiChats.length === 1) captureReadingScrollAnchor();
+                        setAiChats(current => current.filter(chat => chat.id !== id));
+                        if (expandedSearchId === id) setExpandedSearchId(null);
+                      }}
+                      onRetryDictionary={search => { void fetchDictionarySearch(search); }}
+                      onRetryChat={chat => { void requestAiExplanation(chat.id, chat.messages, chat.subject, chat.lineId); }}
+                      onAsk={askAiFollowUp}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
               {/* === 訳・発音の表示切り替えボタン === */}
               {showVocabularyQuickView && (
-                <aside style={{ "--reader-player-height": `${dockedPlayerHeight}px` } as React.CSSProperties} className={`relative z-40 flex shrink-0 flex-col border-t-2 border-blue-200 bg-white shadow-lg ${isSelectionPanelOpen ? "max-h-[min(30dvh,calc((100dvh-var(--reader-player-height)-64px)/2))]" : "max-h-[min(50dvh,calc(100dvh-var(--reader-player-height)-64px))]"} lg:fixed lg:bottom-auto lg:left-auto lg:right-0 lg:top-0 lg:h-[calc(100dvh-var(--reader-player-height))] lg:max-h-none lg:w-[46vw] lg:border-l-2 lg:border-t-0 xl:w-[42vw]`}>
-                  <div className="flex items-center gap-3 border-b border-gray-200 p-3">
-                    <div className="min-w-0 flex-1">
-                      <h3 className="font-semibold text-gray-800">単語帳</h3>
-                      <p className="truncate text-xs text-gray-500">
-                        {selectedUnit?.title ?? "現在のUNIT"}
-                      </p>
-                    </div>
-                    <span className="text-xs text-gray-500">
+                <aside id="reader-vocabulary-panel" role="tabpanel" aria-label="単語帳" hidden={activeReaderPanel !== "vocabulary"} className={activeReaderPanel === "vocabulary" ? "relative flex min-h-0 w-full flex-auto flex-col bg-white" : "hidden"}>
+                  {!isExplanationPanelOpen && <div className="flex shrink-0 items-center gap-2 px-2 py-1">
+                    <h3 className={isExplanationPanelOpen ? "sr-only" : "shrink-0 text-xs font-semibold text-gray-700"}>単語帳</h3>
+                    <div className="flex-1" />
+                    <span className={isExplanationPanelOpen ? "hidden" : "shrink-0 text-[11px] tabular-nums text-gray-500"}>
                       {quickVocabulary.length}語
                     </span>
                     <button
                       type="button"
                       onClick={() => {
-                        if (!hasStartedAi) captureReadingScrollAnchor();
+                        if (!cancelVocabularyEdit()) return;
+                        if (!isExplanationPanelOpen) captureReadingScrollAnchor();
                         setShowVocabularyQuickView(false);
                         setQuickVocabularySearch("");
                       }}
-                      className="rounded border border-gray-300 p-1.5 text-gray-600 hover:bg-gray-50"
+                      className="rounded p-1 text-gray-500 hover:bg-gray-100"
                       aria-label="単語帳クイックビューを閉じる"
                     >
                       <X size={16} />
                     </button>
-                  </div>
+                  </div>}
 
-                  <div className="border-b border-gray-200 p-3">
+                  <div className="shrink-0 border-b border-gray-200 px-2 py-1">
                     <input
                       type="search"
                       value={quickVocabularySearch}
@@ -4598,11 +4439,11 @@ export default function EnglishReadingApp() {
                         setQuickVocabularySearch(event.target.value)
                       }
                       placeholder="単語・意味を検索"
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                      className="w-full rounded border border-gray-300 px-2 py-1 text-xs"
                     />
                   </div>
 
-                  <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  <div className="min-h-0 flex-auto overflow-y-auto">
                     {quickVocabulary.length === 0 ? (
                       <p className="py-8 text-center text-sm text-gray-500">
                         {quickVocabularyQuery
@@ -4610,18 +4451,32 @@ export default function EnglishReadingApp() {
                           : "このUNITには単語が登録されていません"}
                       </p>
                     ) : (
-                      <dl className="divide-y divide-gray-200 rounded-lg border border-gray-200 bg-white">
+                      <dl className="divide-y divide-gray-100 bg-white">
                         {quickVocabulary.map((item) => (
                           <div
                             key={item.id}
-                            className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-3 px-3 py-2.5 text-sm"
+                            className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)_auto] items-start gap-2 px-2 py-1.5 text-sm"
                           >
                             <dt className="break-words font-medium text-gray-900">
-                              {item.word}
+                              {editingVocabulary?.id === item.id ? (
+                                <input aria-label="登録単語を編集" autoFocus={vocabularyEditField === "word"} value={editVocabularyWord} disabled={isSavingVocabulary} onChange={(event) => setEditVocabularyWord(event.target.value)} onKeyDown={handleVocabularyEditKeyDown} className="w-full rounded border border-blue-300 bg-white px-1.5 py-1" />
+                              ) : (
+                                <button type="button" onClick={() => startVocabularyEdit(item, "word")} title="クリックして編集" className="w-full break-words text-left hover:underline">{item.word}</button>
+                              )}
                             </dt>
                             <dd className="break-words text-gray-700">
-                              {item.meaning}
+                              {editingVocabulary?.id === item.id ? (
+                                <input aria-label="登録単語の意味を編集" autoFocus={vocabularyEditField === "meaning"} value={editVocabularyMeaning} disabled={isSavingVocabulary} onChange={(event) => setEditVocabularyMeaning(event.target.value)} onKeyDown={handleVocabularyEditKeyDown} className="w-full rounded border border-blue-300 bg-white px-1.5 py-1" />
+                              ) : (
+                                <button type="button" onClick={() => startVocabularyEdit(item, "meaning")} title="クリックして編集" className="w-full break-words text-left hover:underline">{item.meaning}</button>
+                              )}
                             </dd>
+                            <div className="flex items-center gap-0.5">
+                              {editingVocabulary?.id === item.id ? <>
+                                <button type="button" disabled={isSavingVocabulary} onClick={() => void saveVocabularyEdit()} aria-label="単語の変更を保存" title="保存（Enter）" className="rounded p-1 text-blue-600 hover:bg-blue-50 disabled:opacity-40"><Check size={16} /></button>
+                                <button type="button" disabled={isSavingVocabulary} onClick={() => cancelVocabularyEdit()} aria-label="単語の編集を取り消す" title="取り消し（Esc）" className="rounded p-1 text-gray-500 hover:bg-gray-100 disabled:opacity-40"><X size={16} /></button>
+                              </> : <button type="button" disabled={isSavingVocabulary} onClick={() => void deleteVocabulary(item)} aria-label={`${item.word}を削除`} title="削除" className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"><Trash2 size={16} /></button>}
+                            </div>
                           </div>
                         ))}
                       </dl>
@@ -4629,19 +4484,26 @@ export default function EnglishReadingApp() {
                   </div>
                 </aside>
               )}
+            </ReaderPanels>}
               <div
-                style={{ bottom: dockedPlayerHeight + 12 }}
-                className={`fixed z-50 flex flex-col gap-2 transition-[right,bottom] duration-200 ${
+                style={{
+                  "--reader-tools-bottom": `${dockedPlayerHeight + (hasReaderSidePanel ? readerPanelsHeight : 0) + readerControlsHeight + 8}px`,
+                  "--reader-tools-desktop-bottom": `${dockedPlayerHeight + readerControlsHeight + 8}px`,
+                } as React.CSSProperties}
+                className={`fixed bottom-[min(var(--reader-tools-bottom),calc(100dvh-140px))] z-50 flex flex-col gap-2 transition-[right,bottom] duration-200 ${
                   hasReaderSidePanel
-                    ? "right-3 lg:right-[calc(46vw+0.75rem)] xl:right-[calc(42vw+0.75rem)]"
+                    ? "reader-tools--side right-3"
                     : "right-3"
                 }`}
               >
                 <button
                   type="button"
                   onClick={() => {
-                    if (!hasStartedAi) captureReadingScrollAnchor();
+                    if (showVocabularyQuickView && activeReaderPanel !== "vocabulary") { switchReaderPanelTab("vocabulary"); return; }
+                    if (showVocabularyQuickView && !cancelVocabularyEdit()) return;
+                    if (!isExplanationPanelOpen) captureReadingScrollAnchor();
                     setQuickVocabularySearch("");
+                    switchReaderPanelTab(showVocabularyQuickView ? "selection" : "vocabulary");
                     setShowVocabularyQuickView((current) => !current);
                   }}
                   className={`flex items-center gap-1 rounded-lg bg-gray-700 px-3 py-2 text-sm text-white shadow-md hover:bg-gray-800 ${
@@ -4691,7 +4553,6 @@ export default function EnglishReadingApp() {
                   追加しました！
                 </div>
               )}
-            </div>
             <div aria-hidden className="shrink-0" style={{ height: dockedPlayerHeight }} />
           </div>
         )}
@@ -4833,6 +4694,10 @@ export default function EnglishReadingApp() {
                             {editingVocabulary?.id === v.id ? (
                               <input
                                 type="text"
+                                aria-label="単語一覧の見出し語を編集"
+                                autoFocus={vocabularyEditField === "word"}
+                                disabled={isSavingVocabulary}
+                                onKeyDown={handleVocabularyEditKeyDown}
                                 value={editVocabularyWord}
                                 onChange={(event) =>
                                   setEditVocabularyWord(event.target.value)
@@ -4840,13 +4705,17 @@ export default function EnglishReadingApp() {
                                 className="w-full rounded border border-gray-300 px-2 py-1"
                               />
                             ) : (
-                              v.word
+                              <button type="button" onClick={() => startVocabularyEdit(v, "word")} title="クリックして編集" className="w-full break-words text-left hover:underline">{v.word}</button>
                             )}
                           </td>
                           <td className="col-start-1 break-words text-gray-700 sm:px-3 sm:py-2">
                             {editingVocabulary?.id === v.id ? (
                               <input
                                 type="text"
+                                aria-label="単語一覧の意味を編集"
+                                autoFocus={vocabularyEditField === "meaning"}
+                                disabled={isSavingVocabulary}
+                                onKeyDown={handleVocabularyEditKeyDown}
                                 value={editVocabularyMeaning}
                                 onChange={(event) =>
                                   setEditVocabularyMeaning(event.target.value)
@@ -4854,7 +4723,7 @@ export default function EnglishReadingApp() {
                                 className="w-full rounded border border-gray-300 px-2 py-1"
                               />
                             ) : (
-                              v.meaning
+                              <button type="button" onClick={() => startVocabularyEdit(v, "meaning")} title="クリックして編集" className="w-full break-words text-left hover:underline">{v.meaning}</button>
                             )}
                           </td>
                           <td className="col-start-1 break-words text-xs text-gray-500 sm:px-3 sm:py-2">{v.unit_title}</td>
@@ -4863,12 +4732,14 @@ export default function EnglishReadingApp() {
                               <div className="flex justify-end gap-2">
                                 <button
                                   onClick={saveVocabularyEdit}
+                                  disabled={isSavingVocabulary}
                                   className="rounded bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-700"
                                 >
                                   保存
                                 </button>
                                 <button
                                   onClick={cancelVocabularyEdit}
+                                  disabled={isSavingVocabulary}
                                   className="rounded border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50"
                                 >
                                   キャンセル
