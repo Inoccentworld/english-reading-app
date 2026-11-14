@@ -22,6 +22,8 @@ body {
 .reader-app { --reader-side-width: 46vw; }
 @media (min-width: 1280px) { .reader-app { --reader-side-width: 42vw; } }
 .reader-script-scroll {
+  padding-top: max(8px, var(--reader-overlay-clearance, 0px));
+  padding-bottom: max(4px, var(--reader-overlay-clearance, 0px));
   scrollbar-width: thin;
   scrollbar-color: rgb(156 163 175 / 35%) transparent;
 }

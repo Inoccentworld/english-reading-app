@@ -38,30 +38,59 @@ export function getScriptSelection(selection: Selection | null) {
   return { text: lines.join('\n'), kind, range: range.cloneRange() };
 }
 
-/** Keep a selected passage inside the space left above bottom panels. */
-export function revealScriptSelection(viewport: HTMLElement, range: Range | null, fallback: HTMLElement | null) {
+/** Keep the current selection or playback target in an unobstructed vertical band. */
+export function revealScriptSelection(viewport: HTMLElement, range: Range | null, fallback: HTMLElement | null, follow = false): void {
   const visualViewport = window.visualViewport;
   const viewportBounds = viewport.getBoundingClientRect();
   const top = Math.max(viewportBounds.top, visualViewport?.offsetTop ?? 0) + 12;
-  let bottom = Math.min(viewportBounds.bottom,
+  const bottom = Math.min(viewportBounds.bottom,
     (visualViewport?.offsetTop ?? 0) + (visualViewport?.height ?? window.innerHeight)) - 12;
-  for (const panel of document.querySelectorAll<HTMLElement>('[data-reader-panels], [data-reader-selection-controls], [data-audio-player]')) {
-    const bounds = panel.getBoundingClientRect();
-    // Side panels do not reduce the script's usable height.
-    if (bounds.width && bounds.height && bounds.left < viewportBounds.right - 1 && bounds.right > viewportBounds.left + 1 &&
-      bounds.top > top && bounds.top < bottom && bounds.bottom >= viewportBounds.bottom - 2) bottom = bounds.top - 12;
-  }
   if (bottom <= top) return;
-  const rects = range && viewport.contains(range.commonAncestorContainer)
+  const rects = range && !range.collapsed && viewport.contains(range.commonAncestorContainer)
     ? Array.from(range.getClientRects()).filter(rect => rect.width > 0 && rect.height > 0) : [];
-  const bounds = rects.length ? {
+  const target = rects.length ? {
     top: Math.min(...rects.map(rect => rect.top)), bottom: Math.max(...rects.map(rect => rect.bottom)),
+    left: Math.min(...rects.map(rect => rect.left)), right: Math.max(...rects.map(rect => rect.right)),
   } : fallback?.getBoundingClientRect();
-  if (!bounds) return;
-  const available = bottom - top;
-  // A passage taller than the viewport can only show its beginning.
-  const delta = bounds.bottom - bounds.top > available
-    ? bounds.top - top
-    : bounds.top < top ? bounds.top - top : bounds.bottom > bottom ? bounds.bottom - bottom : 0;
+  const obstacles: { top: number; bottom: number }[] = [];
+  let clearance = 0;
+  for (const panel of document.querySelectorAll<HTMLElement>('[data-reader-panels], [data-reader-selection-controls], [data-audio-player], [data-reader-tools]')) {
+    const bounds = panel.getBoundingClientRect();
+    if (!bounds.width || !bounds.height || bounds.left >= viewportBounds.right - 1 || bounds.right <= viewportBounds.left + 1 || bounds.bottom <= top || bounds.top >= bottom) continue;
+    if (target && bounds.left < target.right && bounds.right > target.left) {
+      // Extra scroll space lets even the first/last line escape a floating player.
+      clearance = Math.max(clearance, Math.min(bottom, bounds.bottom) - Math.max(top, bounds.top) + 24);
+      obstacles.push({ top: Math.max(top, bounds.top - 12), bottom: Math.min(bottom, bounds.bottom + 12) });
+    }
+  }
+  const value = `${clearance}px`;
+  if (viewport.style.getPropertyValue('--reader-overlay-clearance') !== value) {
+    viewport.style.setProperty('--reader-overlay-clearance', value);
+    // Padding moves text; measure the new geometry before deciding how far to move.
+    return revealScriptSelection(viewport, range, fallback, follow);
+  }
+  if (!target) return;
+  const bands: { top: number; bottom: number }[] = [];
+  let cursor = top;
+  for (const obstacle of obstacles.sort((a, b) => a.top - b.top)) {
+    if (obstacle.top > cursor) bands.push({ top: cursor, bottom: obstacle.top });
+    cursor = Math.max(cursor, obstacle.bottom);
+  }
+  if (cursor < bottom) bands.push({ top: cursor, bottom });
+  if (!bands.length) return;
+  const height = target.bottom - target.top;
+  const fitting = bands.filter(band => band.bottom - band.top >= height);
+  const candidates = fitting.length ? fitting : [bands.reduce((a, b) => a.bottom - a.top >= b.bottom - b.top ? a : b)];
+  const moves = candidates.map(band => {
+    const available = band.bottom - band.top;
+    // Oversized selections retain their beginning; an entire paragraph may not fit.
+    if (height > available) return target.top - band.top;
+    if (follow) {
+      if (target.top >= band.top + available * 0.25 && target.bottom <= band.top + available * 0.7) return 0;
+      return (target.top + target.bottom - band.top - band.bottom) / 2;
+    }
+    return target.top < band.top ? target.top - band.top : target.bottom > band.bottom ? target.bottom - band.bottom : 0;
+  });
+  const delta = moves.reduce((a, b) => Math.abs(a) <= Math.abs(b) ? a : b);
   if (Math.abs(delta) > 1) viewport.scrollBy({ top: delta, behavior: 'instant' });
 }

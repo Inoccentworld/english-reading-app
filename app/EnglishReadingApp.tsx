@@ -897,27 +897,7 @@ export default function EnglishReadingApp() {
     };
   }, [libraryContextMenu]);
 
-  useEffect(() => {
-    if (
-      currentView !== "reader" ||
-      !followPlayback ||
-      activeTimedLineId === null ||
-      isSelectingTextRef.current ||
-      window.getSelection()?.toString().trim()
-    ) {
-      return;
-    }
-    const element = document.querySelector<HTMLElement>(
-      `[data-reader-line-id="${activeTimedLineId}"]`,
-    );
-    if (!element) return;
-    const bounds = element.getBoundingClientRect();
-    const viewport = document.querySelector<HTMLElement>("[data-reader-scroll]")?.getBoundingClientRect();
-    const upperLimit = viewport ? viewport.top + viewport.height * 0.25 : window.innerHeight * 0.25;
-    const lowerLimit = viewport ? viewport.top + viewport.height * 0.7 : window.innerHeight * 0.7;
-    if (bounds.top >= upperLimit && bounds.bottom <= lowerLimit) return;
-    element.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [activeTimedLineId, currentView, followPlayback]);
+
 
   useEffect(() => {
     if (!vocabularyMenuId) return;
@@ -1970,36 +1950,96 @@ export default function EnglishReadingApp() {
 
   const handleAiResponseSelection = (lineId?: number) => {
     const text = window.getSelection()?.toString().trim();
-    if (text) applySelectedText(text, lineId);
+    if (text) {
+      scriptSelectionRangeRef.current = null;
+      applySelectedText(text, lineId);
+    }
   };
 
   const lastNativeSelectionRef = useRef("");
   const scriptSelectionRangeRef = useRef<Range | null>(null);
+  const revealReaderPosition = useEffectEvent((playbackChanged = false) => {
+    if (isSelectingTextRef.current || selectionPointerIdsRef.current.size || selectionTouchCountRef.current) return false;
+    const viewport = document.querySelector<HTMLElement>("[data-reader-scroll]");
+    if (!viewport) return;
+    const selection = window.getSelection();
+    const liveRange = selection?.rangeCount && !selection.isCollapsed && viewport.contains(selection.getRangeAt(0).commonAncestorContainer)
+      ? selection.getRangeAt(0) : null;
+    const savedRange = isSelectionPanelOpen && selectedText ? scriptSelectionRangeRef.current : null;
+    const range = liveRange ?? savedRange;
+    const selecting = Boolean(liveRange || (isSelectionPanelOpen && selectedText && selectedLineId !== null));
+    // An actual selection wins even when playback advances. Manual scrolling is
+    // left alone: only playback changes and layout/selection events call this.
+    if (playbackChanged && !selecting && !followPlayback) return;
+    const lineId = selecting ? selectedLineId : activeTimedLineId;
+    const line = lineId === null ? null : viewport.querySelector<HTMLElement>(`[data-reader-line-id="${lineId}"]`);
+    const word = !selecting && activeTimedWordIndex !== null
+      ? line?.querySelector<HTMLElement>(`[data-reader-word-index="${activeTimedWordIndex}"]`) : null;
+    revealScriptSelection(viewport, range, word ?? line, playbackChanged && !selecting);
+    return true;
+  });
+  useEffect(() => {
+    if (currentView === "reader") revealReaderPosition(true);
+  }, [currentView, activeTimedLineId, activeTimedWordIndex, followPlayback]);
   useLayoutEffect(() => {
-    if (currentView !== "reader" || (!isSelectionPanelOpen && !hasReaderSidePanel)) return;
+    if (currentView !== "reader") return;
     const viewport = document.querySelector<HTMLElement>("[data-reader-scroll]");
     if (!viewport) return;
     let frame = 0;
+    let deferred = false;
     const reveal = () => {
       cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        if (isSelectingTextRef.current || selectionPointerIdsRef.current.size || selectionTouchCountRef.current) return;
-        const fallback = selectedLineId === null ? null : viewport.querySelector<HTMLElement>(`[data-reader-line-id="${selectedLineId}"]`);
-        revealScriptSelection(viewport, scriptSelectionRangeRef.current, fallback);
-      });
+      frame = requestAnimationFrame(() => { deferred = revealReaderPosition() === false; });
     };
+    const resume = () => { if (deferred) reveal(); };
     const observer = new ResizeObserver(reveal);
-    observer.observe(viewport);
-    document.querySelectorAll<HTMLElement>("[data-reader-panels], [data-reader-selection-controls], [data-audio-player]").forEach(element => observer.observe(element));
+    const observe = () => {
+      observer.disconnect();
+      // Individual line heights cover ruby/translation changes and font loading,
+      // even when the scroll viewport itself keeps exactly the same dimensions.
+      [viewport, ...viewport.querySelectorAll<HTMLElement>("[data-reader-line-id]"),
+        ...document.querySelectorAll<HTMLElement>("[data-reader-panels], [data-reader-selection-controls], [data-audio-player], [data-reader-tools]")]
+        .forEach(element => observer.observe(element));
+    };
+    observe();
+    const mutations = new MutationObserver(records => {
+      // Word highlight classes change on every playback tick, but do not change
+      // layout. Observe content and inline geometry instead, including player drag.
+      const contentChanged = records.some(record => record.type !== "attributes" && viewport.contains(record.target));
+      const geometryChanged = records.some(record => record.type === "attributes" &&
+        (record.target === viewport || record.target === root ||
+          (record.target instanceof Element && record.target.matches("[data-audio-player], [data-reader-panels], [data-reader-tools]"))));
+      if (contentChanged) observe();
+      if (contentChanged || geometryChanged) reveal();
+    });
+    const root = viewport.closest(".reader-app");
+    if (root) mutations.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["style", "hidden", "data-reader-text-size"] });
+    const transitionEnd = (event: TransitionEvent) => {
+      if (event.target instanceof Element && event.target.matches("[data-reader-tools], [data-audio-player], [data-reader-panels]")) reveal();
+    };
+    root?.addEventListener("transitionend", transitionEnd as EventListener);
+    window.addEventListener("resize", reveal);
+    document.addEventListener("selectionchange", reveal);
+    window.addEventListener("pointerup", resume);
+    window.addEventListener("pointercancel", resume);
+    window.addEventListener("touchend", resume);
+    window.addEventListener("touchcancel", resume);
     window.visualViewport?.addEventListener("resize", reveal);
     window.visualViewport?.addEventListener("scroll", reveal);
     reveal();
     return () => {
-      cancelAnimationFrame(frame); observer.disconnect();
+      cancelAnimationFrame(frame); observer.disconnect(); mutations.disconnect();
+      root?.removeEventListener("transitionend", transitionEnd as EventListener);
+      window.removeEventListener("resize", reveal);
+      document.removeEventListener("selectionchange", reveal);
+      window.removeEventListener("pointerup", resume);
+      window.removeEventListener("pointercancel", resume);
+      window.removeEventListener("touchend", resume);
+      window.removeEventListener("touchcancel", resume);
       window.visualViewport?.removeEventListener("resize", reveal);
       window.visualViewport?.removeEventListener("scroll", reveal);
     };
-  }, [currentView, isSelectionPanelOpen, hasReaderSidePanel, readerPanelsHeight, readerControlsHeight, dockedPlayerHeight, selectedLineId, selectedText, showVocabularyForm, expandedSearchId]);
+  }, [currentView, isSelectionPanelOpen, hasReaderSidePanel, readerPanelsHeight, readerControlsHeight, dockedPlayerHeight, selectedLineId, selectedText, showVocabularyForm, expandedSearchId, activeReaderPanel, readerSideWidth, readerTextSize, selectedUnit]);
   useEffect(() => {
     if (currentView !== "reader") return;
     const copy = (event: ClipboardEvent) => {
@@ -3931,7 +3971,7 @@ export default function EnglishReadingApp() {
                                   activeTimedWordIndex === timedWord?.wordIndex;
                                 return phonetic ? (
                                   <ruby
-                                    key={`${line.id}-segment-${index}`}
+                                    key={`${line.id}-segment-${index}`} data-reader-word-index={timedWord?.wordIndex}
                                     onClick={(event) => {
                                       if (window.getSelection()?.toString().trim()) return;
                                       if (!timedWord) return;
@@ -3954,7 +3994,7 @@ export default function EnglishReadingApp() {
                                   </ruby>
                                 ) : (
                                   <span
-                                    key={`${line.id}-segment-${index}`}
+                                    key={`${line.id}-segment-${index}`} data-reader-word-index={timedWord?.wordIndex}
                                     onClick={(event) => {
                                       if (window.getSelection()?.toString().trim()) return;
                                       if (!timedWord) return;
@@ -3980,7 +4020,7 @@ export default function EnglishReadingApp() {
                             const timedWord = timedLine?.words[index];
                             return (
                             <ruby
-                              data-reader-copy-word key={`${line.id}-${index}`}
+                              data-reader-copy-word key={`${line.id}-${index}`} data-reader-word-index={timedWord?.wordIndex}
                               onClick={(event) => {
                                 if (window.getSelection()?.toString().trim()) return;
                                 if (!timedWord) return;
@@ -4022,7 +4062,7 @@ export default function EnglishReadingApp() {
                                 activeTimedWordIndex === timedWord?.wordIndex;
                               return (
                                 <span
-                                  key={`${line.id}-plain-${index}`}
+                                  key={`${line.id}-plain-${index}`} data-reader-word-index={timedWord?.wordIndex}
                                   onClick={(event) => {
                                     if (window.getSelection()?.toString().trim()) return;
                                     if (!timedWord) return;
@@ -4546,7 +4586,7 @@ export default function EnglishReadingApp() {
                 </aside>
               )}
             </ReaderPanels>}
-              <div
+              <div data-reader-tools
                 style={{
                   "--reader-tools-bottom": `${dockedPlayerHeight + (hasReaderSidePanel ? readerPanelsHeight : 0) + readerControlsHeight + 8}px`,
                   "--reader-tools-desktop-bottom": `${dockedPlayerHeight + readerControlsHeight + 8}px`,
