@@ -1,3 +1,56 @@
+/** Remember the actual pointer target: Chromium may snap rt selections to ruby base. */
+export function beginScriptSelection(target: EventTarget | null) {
+  const layer = target instanceof Element ? target.closest<HTMLElement>('[data-reader-text-kind]') : null;
+  const viewport = layer?.closest<HTMLElement>('[data-reader-scroll]');
+  if (!viewport || !layer?.dataset.readerTextKind) return;
+  viewport.dataset.readerSelectionStartKind = layer.dataset.readerTextKind;
+  viewport.dataset.readerSelectionGesture = 'true';
+  if (viewport.dataset.readerSelectionKind && viewport.dataset.readerSelectionKind !== layer.dataset.readerTextKind) {
+    // Otherwise clicking the invisible half of an existing native selection can
+    // start dragging that selection instead of beginning a new one.
+    window.getSelection()?.removeAllRanges();
+  }
+}
+
+export function finishScriptSelection() {
+  document.querySelectorAll<HTMLElement>('[data-reader-selection-gesture]').forEach(viewport => delete viewport.dataset.readerSelectionGesture);
+}
+
+/** Preserve native selection while showing its highlight on only the anchor layer. */
+export function syncScriptSelectionHighlight(selection: Selection | null) {
+  const elementOf = (node: Node | null) => node instanceof Element ? node : node?.parentElement;
+  const anchor = selection && !selection.isCollapsed ? elementOf(selection.anchorNode)?.closest<HTMLElement>('[data-reader-text-kind]') : null;
+  const focus = selection && !selection.isCollapsed ? elementOf(selection.focusNode)?.closest<HTMLElement>('[data-reader-text-kind]') : null;
+  for (const viewport of document.querySelectorAll<HTMLElement>('[data-reader-scroll]')) {
+    const kind = anchor && focus && viewport.contains(anchor) && viewport.contains(focus)
+      ? viewport.dataset.readerSelectionStartKind ?? anchor.dataset.readerTextKind : undefined;
+    if (kind === 'phonetic' && anchor?.dataset.readerTextKind !== 'phonetic' && selection?.rangeCount) {
+      const anchorRt = elementOf(selection.anchorNode)?.closest('ruby')?.querySelector('rt')?.firstChild;
+      const focusRt = elementOf(selection.focusNode)?.closest('ruby')?.querySelector('rt')?.firstChild;
+      if (anchorRt && focusRt) {
+        const range = selection.getRangeAt(0);
+        const backwards = selection.anchorNode === range.endContainer && selection.anchorOffset === range.endOffset;
+        // Include the terminal annotation too; native base selection ends before rt.
+        selection.setBaseAndExtent(anchorRt, backwards ? anchorRt.textContent?.length ?? 0 : 0,
+          focusRt, backwards ? 0 : focusRt.textContent?.length ?? 0);
+      }
+    }
+    if (kind) viewport.dataset.readerSelectionKind = kind;
+    else {
+      delete viewport.dataset.readerSelectionKind;
+      if (!selection || !viewport.dataset.readerSelectionGesture) delete viewport.dataset.readerSelectionStartKind;
+    }
+    for (const layer of viewport.querySelectorAll<HTMLElement>('[data-reader-text-kind]')) {
+      if (kind) {
+        // Inheritance follows the normal DOM tree: nested rt overrides its ruby's
+        // background without hiding text or changing selection/layout geometry.
+        const background = layer.dataset.readerTextKind === kind ? '#bfdbfe' : 'transparent';
+        if (layer.style.getPropertyValue('--reader-selection-background') !== background) layer.style.setProperty('--reader-selection-background', background);
+      } else layer.style.removeProperty('--reader-selection-background');
+    }
+  }
+}
+
 /** Read only the text layer where a script selection began, including partial words. */
 export function getScriptSelection(selection: Selection | null) {
   if (!selection?.rangeCount || selection.isCollapsed) return null;

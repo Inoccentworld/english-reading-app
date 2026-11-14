@@ -33,6 +33,13 @@ body {
 .reader-script-scroll:hover { scrollbar-color: rgb(156 163 175 / 55%) transparent; }
 .reader-script-scroll::-webkit-scrollbar-thumb:hover { background: rgb(156 163 175 / 55%); }
 
+/* Native selection remains intact; nested ruby annotations have their own color. */
+.reader-script-scroll[data-reader-selection-kind] [data-reader-text-kind]::selection,
+.reader-script-scroll[data-reader-selection-kind] [data-reader-text-kind] *::selection {
+  background-color: var(--reader-selection-background, transparent);
+  color: currentColor;
+}
+
 @media (min-width: 900px), (min-width: 640px) and (min-aspect-ratio: 4/3) {
   .reader-script-layout--side {
     margin-left: 0;

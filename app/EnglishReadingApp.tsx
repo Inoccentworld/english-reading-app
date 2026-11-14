@@ -10,7 +10,7 @@ import React, {
 } from "react";
 import ReaderSearchResults, { type DictionaryEntry, type DictionarySearch } from "./ReaderSearchResults";
 import ReaderPanels from "./ReaderPanels";
-import { getScriptSelection, revealScriptSelection } from "@/lib/readerSelection";
+import { beginScriptSelection, finishScriptSelection, getScriptSelection, revealScriptSelection, syncScriptSelectionHighlight } from "@/lib/readerSelection";
 import TimingEditor from "./TimingEditor";
 import FloatingPlayer from "./FloatingPlayer";
 import AudioTimeline, { type AudioTimelineHandle } from "./AudioTimeline";
@@ -1975,7 +1975,10 @@ export default function EnglishReadingApp() {
     const line = lineId === null ? null : viewport.querySelector<HTMLElement>(`[data-reader-line-id="${lineId}"]`);
     const word = !selecting && activeTimedWordIndex !== null
       ? line?.querySelector<HTMLElement>(`[data-reader-word-index="${activeTimedWordIndex}"]`) : null;
-    revealScriptSelection(viewport, range, word ?? line, playbackChanged && !selecting);
+    // Keep the whole sentence, ruby and translation visible when they fit.
+    // A word alone can remain visible while the rest of its sentence is hidden.
+    const rowFits = line && line.getBoundingClientRect().height <= viewport.clientHeight - 24;
+    revealScriptSelection(viewport, range, rowFits ? line : word ?? line, playbackChanged && !selecting);
     return true;
   });
   useEffect(() => {
@@ -2097,6 +2100,9 @@ export default function EnglishReadingApp() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const pressedPointers = selectionPointerIdsRef.current;
     const schedule = () => {
+      // Highlight follows the native anchor immediately, including during drag.
+      // Only registration/search waits until the selection gesture finishes.
+      syncScriptSelectionHighlight(window.getSelection());
       clearTimeout(timer);
       if (pressedPointers.size || selectionTouchCountRef.current) return;
       timer = setTimeout(() => readNativeSelection(), 250);
@@ -2104,6 +2110,7 @@ export default function EnglishReadingApp() {
     const beginSelection = (target: EventTarget | null) => {
       clearTimeout(timer);
       if (!(target instanceof Element) || !target.closest(READER_SELECTION_SELECTOR)) return;
+      beginScriptSelection(target);
       isSelectingTextRef.current = true;
       // A fresh gesture may deliberately select the same text for another field.
       lastNativeSelectionRef.current = "";
@@ -2118,6 +2125,7 @@ export default function EnglishReadingApp() {
     };
     const endSelection = () => {
       if (!pressedPointers.size && !selectionTouchCountRef.current) {
+        finishScriptSelection();
         isSelectingTextRef.current = false;
         schedule();
       }
@@ -2139,6 +2147,7 @@ export default function EnglishReadingApp() {
       pressedPointers.clear();
       selectionTouchCountRef.current = 0;
       isSelectingTextRef.current = false;
+      finishScriptSelection();
     };
     document.addEventListener("pointerdown", pointerDown, true);
     window.addEventListener("pointerup", pointerUp, true);
@@ -2150,6 +2159,7 @@ export default function EnglishReadingApp() {
     window.addEventListener("blur", reset);
     return () => {
       reset();
+      syncScriptSelectionHighlight(null);
       document.removeEventListener("pointerdown", pointerDown, true);
       window.removeEventListener("pointerup", pointerUp, true);
       window.removeEventListener("pointercancel", pointerUp, true);
