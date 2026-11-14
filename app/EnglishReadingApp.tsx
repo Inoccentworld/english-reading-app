@@ -10,7 +10,7 @@ import React, {
 } from "react";
 import ReaderSearchResults, { type DictionaryEntry, type DictionarySearch } from "./ReaderSearchResults";
 import ReaderPanels from "./ReaderPanels";
-import { beginScriptSelection, finishScriptSelection, getScriptSelection, revealScriptSelection, syncScriptSelectionHighlight } from "@/lib/readerSelection";
+import { beginScriptSelection, finishScriptSelection, getScriptSelection, revealScriptSelection, syncScriptSelectionHighlight, measureReaderAnchor, readerAnchorLayoutChanged, restoreReaderAnchor, type ReaderAnchor } from "@/lib/readerSelection";
 import TimingEditor from "./TimingEditor";
 import FloatingPlayer from "./FloatingPlayer";
 import AudioTimeline, { type AudioTimelineHandle } from "./AudioTimeline";
@@ -1958,6 +1958,7 @@ export default function EnglishReadingApp() {
 
   const lastNativeSelectionRef = useRef("");
   const scriptSelectionRangeRef = useRef<Range | null>(null);
+  const readerPositionAnchorRef = useRef<ReaderAnchor | null>(null);
   const revealReaderPosition = useEffectEvent((playbackChanged = false) => {
     if (isSelectingTextRef.current || selectionPointerIdsRef.current.size || selectionTouchCountRef.current) return false;
     const viewport = document.querySelector<HTMLElement>("[data-reader-scroll]");
@@ -1975,19 +1976,41 @@ export default function EnglishReadingApp() {
     const line = lineId === null ? null : viewport.querySelector<HTMLElement>(`[data-reader-line-id="${lineId}"]`);
     const word = !selecting && activeTimedWordIndex !== null
       ? line?.querySelector<HTMLElement>(`[data-reader-word-index="${activeTimedWordIndex}"]`) : null;
+    const key = `${selectedUnit?.id}:${lineId}`;
+    const before = readerPositionAnchorRef.current;
+    const measured = line ? measureReaderAnchor(viewport, line, key) : null;
+    if (!playbackChanged && before && measured) restoreReaderAnchor(viewport, before, measured);
     // Keep the whole sentence, ruby and translation visible when they fit.
     // A word alone can remain visible while the rest of its sentence is hidden.
     const rowFits = line && line.getBoundingClientRect().height <= viewport.clientHeight - 24;
     revealScriptSelection(viewport, range, rowFits ? line : word ?? line, playbackChanged && !selecting);
+    const settled = line ? measureReaderAnchor(viewport, line, key) : null;
+    if (settled) {
+      // Clamping a long translation must not overwrite the preferred position.
+      if (before?.key === key && (!playbackChanged || selecting)) settled.ratio = before.ratio;
+      readerPositionAnchorRef.current = settled;
+    } else readerPositionAnchorRef.current = null;
     return true;
   });
   useEffect(() => {
     if (currentView === "reader") revealReaderPosition(true);
   }, [currentView, activeTimedLineId, activeTimedWordIndex, followPlayback]);
+  const rememberManualReaderScroll = useEffectEvent(() => {
+    const viewport = document.querySelector<HTMLElement>("[data-reader-scroll]");
+    const before = readerPositionAnchorRef.current;
+    if (!viewport || !before || Math.abs(viewport.scrollTop - before.scrollTop) <= 1) return;
+    const lineId = before.key.slice(before.key.lastIndexOf(":") + 1);
+    const line = viewport.querySelector<HTMLElement>(`[data-reader-line-id="${lineId}"]`);
+    const measured = line ? measureReaderAnchor(viewport, line, before.key) : null;
+    // Browser scroll anchoring during a reflow is not a new user preference.
+    if (measured && !readerAnchorLayoutChanged(before, measured)) readerPositionAnchorRef.current = measured;
+  });
   useLayoutEffect(() => {
     if (currentView !== "reader") return;
     const viewport = document.querySelector<HTMLElement>("[data-reader-scroll]");
     if (!viewport) return;
+    const rememberScroll = () => rememberManualReaderScroll();
+    viewport.addEventListener("scroll", rememberScroll, { passive: true });
     let frame = 0;
     let deferred = false;
     const reveal = () => {
@@ -2032,6 +2055,7 @@ export default function EnglishReadingApp() {
     reveal();
     return () => {
       cancelAnimationFrame(frame); observer.disconnect(); mutations.disconnect();
+      viewport.removeEventListener("scroll", rememberScroll);
       root?.removeEventListener("transitionend", transitionEnd as EventListener);
       window.removeEventListener("resize", reveal);
       document.removeEventListener("selectionchange", reveal);

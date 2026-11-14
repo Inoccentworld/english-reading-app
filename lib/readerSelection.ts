@@ -91,6 +91,43 @@ export function getScriptSelection(selection: Selection | null) {
   return { text: lines.join('\n'), kind, range: range.cloneRange() };
 }
 
+export type ReaderAnchor = {
+  key: string; ratio: number; height: number; width: number;
+  contentTop: number; rowHeight: number; scrollTop: number;
+};
+
+/** Use an English glyph, not the ruby box whose top moves when IPA is added. */
+export function measureReaderAnchor(viewport: HTMLElement, line: HTMLElement, key: string): ReaderAnchor | null {
+  const english = line.querySelector('[data-reader-text-kind="english"]');
+  if (!english) return null;
+  const walker = document.createTreeWalker(english, NodeFilter.SHOW_TEXT);
+  let glyph: DOMRect | undefined;
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (!node.textContent?.trim() || node.parentElement?.closest('[data-reader-text-kind="phonetic"]')) continue;
+    const range = document.createRange();
+    const start = node.textContent.search(/\S/);
+    range.setStart(node, start); range.setEnd(node, start + 1);
+    glyph = range.getBoundingClientRect(); break;
+  }
+  if (!glyph?.height) return null;
+  const bounds = viewport.getBoundingClientRect();
+  return { key, ratio: (glyph.top - bounds.top) / bounds.height, height: bounds.height, width: bounds.width,
+    contentTop: glyph.top - bounds.top + viewport.scrollTop, rowHeight: line.getBoundingClientRect().height, scrollTop: viewport.scrollTop };
+}
+
+export function readerAnchorLayoutChanged(before: ReaderAnchor, after: ReaderAnchor) {
+  return before.key === after.key && (Math.abs(before.height - after.height) > 1 || Math.abs(before.width - after.width) > 1 ||
+    Math.abs(before.contentTop - after.contentTop) > 1 || Math.abs(before.rowHeight - after.rowHeight) > 1);
+}
+
+export function restoreReaderAnchor(viewport: HTMLElement, before: ReaderAnchor, after: ReaderAnchor) {
+  if (!readerAnchorLayoutChanged(before, after)) return false;
+  const delta = (after.ratio - before.ratio) * after.height;
+  if (Math.abs(delta) > 1) viewport.scrollBy({ top: delta, behavior: 'instant' });
+  return true;
+}
+
 /** Keep the current selection or playback target in an unobstructed vertical band. */
 export function revealScriptSelection(viewport: HTMLElement, range: Range | null, fallback: HTMLElement | null, follow = false): void {
   const visualViewport = window.visualViewport;
