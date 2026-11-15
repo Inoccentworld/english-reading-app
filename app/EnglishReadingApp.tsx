@@ -725,9 +725,9 @@ export default function EnglishReadingApp() {
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(1);
-  const [audioVolume, setAudioVolume] = useState(1);
+  const [audioVolume, setAudioVolume] = useState(0.5);
   const [audioMuted, setAudioMuted] = useState(false);
-  const lastAudibleVolumeRef = useRef(1);
+  const lastAudibleVolumeRef = useRef(0.5);
   const [shortcutNotice, setShortcutNotice] = useState<{ text: string; id: number } | null>(null);
   const shortcutNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shortcutNoticeId = useRef(0);
